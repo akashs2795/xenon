@@ -17,6 +17,7 @@ import java.util.logging.Level;
 
 import com.vmware.xenon.common.ServiceHost;
 import com.vmware.xenon.services.common.ExampleService;
+import com.vmware.xenon.services.common.PhoneBookService;
 import com.vmware.xenon.services.common.RootNamespaceService;
 
 /**
@@ -52,6 +53,7 @@ public class PerfHost extends ServiceHost {
         super.startService(OwnerSelectedService.createFactory(PerfUtils.SimpleState.class));
         super.startService(FullCapService.createFactory(PerfUtils.SimpleState.class));
         super.startFactory(ExampleService.class, ExampleService::createFactory);
+        super.startFactory(PhoneBookService.class, PhoneBookService::createFactory);
 
         return this;
     }

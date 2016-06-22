@@ -30,7 +30,7 @@ import com.vmware.xenon.services.common.ExampleService.ExampleServiceState;
 import com.vmware.xenon.services.common.ServiceHostManagementService;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
-import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
+import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
 
 // Note that we can't use BasicReusableHostTestCase here because we need to enable
 // authorization on the host before it's started, and BasicReusableHostTestCase

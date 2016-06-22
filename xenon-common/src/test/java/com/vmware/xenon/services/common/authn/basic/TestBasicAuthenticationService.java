@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn;
+package com.vmware.xenon.services.common.authn.basic;
 
 import java.net.URI;
 import java.util.Base64;
@@ -32,6 +32,8 @@ import com.vmware.xenon.services.common.AuthCredentialsService;
 import com.vmware.xenon.services.common.AuthCredentialsService.AuthCredentialsServiceState;
 import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.UserService.UserState;
+import com.vmware.xenon.services.common.authn.AuthenticationConstants;
+import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
 
 public class TestBasicAuthenticationService extends BasicTestCase {

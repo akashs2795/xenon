@@ -119,7 +119,10 @@ import com.vmware.xenon.services.common.UpdateIndexRequest;
 import com.vmware.xenon.services.common.UserGroupService;
 import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationConstants;
-import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
+import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
+import com.vmware.xenon.services.common.authn.vidm.VidmAuthenticationService;
+import com.vmware.xenon.services.common.authn.vidm.VidmVerifier;
+import com.vmware.xenon.services.common.authn.vidm.VidmVerifier.VidmTokenException;
 
 /**
  * Service host manages service life cycle, delivery of operations (remote and local) and performing
@@ -133,6 +136,7 @@ import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
  */
 public class ServiceHost implements ServiceRequestSender {
     public static final String UI_DIRECTORY_NAME = "ui";
+
 
     public static class ServiceAlreadyStartedException extends IllegalStateException {
         private static final long serialVersionUID = -1444810129515584386L;
@@ -499,6 +503,8 @@ public class ServiceHost implements ServiceRequestSender {
 
     private Signer tokenSigner;
     private Verifier tokenVerifier;
+    private VidmVerifier vidmTokenVerifier;
+    public String vidmUserLink;
 
     private AuthorizationContext systemAuthorizationContext;
     private AuthorizationContext guestAuthorizationContext;
@@ -506,6 +512,14 @@ public class ServiceHost implements ServiceRequestSender {
     protected ServiceHost() {
         this.state = new ServiceHostState();
         this.state.id = UUID.randomUUID().toString();
+    }
+
+    public void setVidmUserLink(String vidmUserLink) {
+        this.vidmUserLink = vidmUserLink;
+    }
+
+    public String getVidmUserLink() {
+        return this.vidmUserLink;
     }
 
     public ServiceHost initialize(String[] args) throws Throwable {
@@ -1110,6 +1124,7 @@ public class ServiceHost implements ServiceRequestSender {
         byte[] secret = getJWTSecret();
         this.tokenSigner = new Signer(secret);
         this.tokenVerifier = new Verifier(secret);
+        this.vidmTokenVerifier = new VidmVerifier();
 
         if (getPort() != PORT_VALUE_LISTENER_DISABLED) {
             if (this.httpListener == null) {
@@ -1206,6 +1221,7 @@ public class ServiceHost implements ServiceRequestSender {
         addPrivilegedService(OperationIndexService.class);
         addPrivilegedService(LuceneBlobIndexService.class);
         addPrivilegedService(BasicAuthenticationService.class);
+        addPrivilegedService(VidmAuthenticationService.class);
 
         // Capture authorization context; this function executes as the system user
         AuthorizationContext ctx = OperationContext.getAuthorizationContext();
@@ -1252,6 +1268,8 @@ public class ServiceHost implements ServiceRequestSender {
         coreServices.add(new GuestUserService());
 
         coreServices.add(new BasicAuthenticationService());
+        coreServices.add(new VidmAuthenticationService());
+
 
         Service transactionFactoryService = new TransactionFactoryService();
         coreServices.add(transactionFactoryService);
@@ -2932,6 +2950,7 @@ public class ServiceHost implements ServiceRequestSender {
     }
 
     AuthorizationContext getAuthorizationContext(Operation op) {
+        String authType = op.getRequestHeader(Operation.TYPE_HEADER);
         String token = op.getRequestHeader(Operation.REQUEST_AUTH_TOKEN_HEADER);
         if (token == null) {
             Map<String, String> cookies = op.getCookies();
@@ -2941,6 +2960,9 @@ public class ServiceHost implements ServiceRequestSender {
             token = cookies.get(AuthenticationConstants.REQUEST_AUTH_TOKEN_COOKIE);
         }
 
+        if (authType == null) {
+            authType = "Basic" ;
+        }
         if (token == null) {
             return null;
         }
@@ -2950,7 +2972,11 @@ public class ServiceHost implements ServiceRequestSender {
         try {
             Claims claims = null;
             if (ctx == null) {
-                claims = this.getTokenVerifier().verify(token, Claims.class);
+                if (authType.matches(VidmAuthenticationService.VIDM_AUTH_NAME)) {
+                    claims = this.getVidmTokenVerifier().verify(token , getVidmUserLink());
+                } else {
+                    claims = this.getTokenVerifier().verify(token, Claims.class);
+                }
             } else {
                 claims = ctx.getClaims();
             }
@@ -2970,14 +2996,13 @@ public class ServiceHost implements ServiceRequestSender {
             if (ctx != null) {
                 return ctx;
             }
-
             AuthorizationContext.Builder b = AuthorizationContext.Builder.create();
             b.setClaims(claims);
             b.setToken(token);
             ctx = b.getResult();
             this.authorizationContextCache.put(token, ctx);
             return ctx;
-        } catch (TokenException | GeneralSecurityException e) {
+        } catch (VidmTokenException | TokenException | GeneralSecurityException e) {
             log(Level.INFO, "Error verifying token: %s", e);
         }
 
@@ -4836,6 +4861,18 @@ public class ServiceHost implements ServiceRequestSender {
     }
 
     /**
+     * Return the host's token verifier.
+     *
+     * Visibility is intentionally set to non-public since access to the signer
+     * must be limited to authorized services only.
+     *
+     * @return token verifier.
+     */
+    protected VidmVerifier getVidmTokenVerifier() {
+        return this.vidmTokenVerifier;
+    }
+
+    /**
      * Infrastructure use only. Only services added as privileged can use this method.
      */
     public void cacheAuthorizationContext(Service s, String token, AuthorizationContext ctx) {
@@ -4861,7 +4898,6 @@ public class ServiceHost implements ServiceRequestSender {
             // No (valid) authorization context, fall back to guest context
             ctx = getGuestAuthorizationContext();
         }
-
         op.setAuthorizationContext(ctx);
     }
 

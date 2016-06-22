@@ -18,15 +18,11 @@ import java.util.logging.Level;
 import com.vmware.xenon.common.AuthorizationSetupHelper;
 import com.vmware.xenon.common.ServiceHost;
 import com.vmware.xenon.common.Utils;
-import com.vmware.xenon.services.common.ExampleService.ExampleServiceState;
+import com.vmware.xenon.services.common.PhoneBookService.PhoneBookServiceState;
 
-public class ExampleServiceHost extends ServiceHost {
+public class PhoneBookServiceHost extends ServiceHost {
 
-    private static final String vidmUser = "vidm@localhost" ;
-    private static final String vidmUserPassword = "vidmUserPassword" ;
-
-
-    public static class ExampleHostArguments extends Arguments {
+    public static class PhoneBookHostArguments extends Arguments {
         /**
          * The email address of a user that should be granted "admin" privileges to all services
          */
@@ -38,21 +34,21 @@ public class ExampleServiceHost extends ServiceHost {
         public String adminUserPassword;
 
         /**
-         * The email address of a user that should be granted privileges just to example services
+         * The email address of a user that should be granted privileges just to PhoneBook services
          * that they own
          */
-        public String exampleUser;
+        public String phoneBookUser;
 
         /**
-         * The password of the exampleUser
+         * The password of the PhoneBookUser
          */
-        public String exampleUserPassword;
+        public String phoneBookUserPassword;
     }
 
-    private ExampleHostArguments args;
+    private PhoneBookHostArguments args;
 
     public static void main(String[] args) throws Throwable {
-        ExampleServiceHost h = new ExampleServiceHost();
+        PhoneBookServiceHost h = new PhoneBookServiceHost();
         h.initialize(args);
         h.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -64,13 +60,13 @@ public class ExampleServiceHost extends ServiceHost {
 
     @Override
     public ServiceHost initialize(String[] args) throws Throwable {
-        this.args = new ExampleHostArguments();
+        this.args = new PhoneBookHostArguments();
         super.initialize(args, this.args);
         if (this.args.adminUser != null && this.args.adminUserPassword == null) {
             throw new IllegalStateException("adminUser specified, but not adminUserPassword");
         }
-        if (this.args.exampleUser != null && this.args.exampleUserPassword == null) {
-            throw new IllegalStateException("exampleUser specified, but not exampleUserPassword");
+        if (this.args.phoneBookUser != null && this.args.phoneBookUserPassword == null) {
+            throw new IllegalStateException("PhoneBookUser specified, but not PhoneBookUserPassword");
         }
         return this;
     }
@@ -83,12 +79,12 @@ public class ExampleServiceHost extends ServiceHost {
 
         setAuthorizationContext(this.getSystemAuthorizationContext());
 
-        // Start the example service factory
-        super.startFactory(ExampleService.class, ExampleService::createFactory);
+        // Start the PhoneBook service factory
+        super.startFactory(PhoneBookService.class, PhoneBookService::createFactory);
 
-        // Start the example task service factory: when it receives a task, it will delete
-        // all example services
-        super.startFactory(ExampleTaskService.class, ExampleTaskService::createFactory);
+        // Start the PhoneBook task service factory: when it receives a task, it will delete
+        // all PhoneBook services
+        super.startFactory(PhoneBookTaskService.class, PhoneBookTaskService::createFactory);
 
         // Start the root namespace factory: this will respond to the root URI (/) and list all
         // the factory services.
@@ -105,23 +101,16 @@ public class ExampleServiceHost extends ServiceHost {
                         .setIsAdmin(true)
                         .start();
             }
-            if (this.args.exampleUser != null) {
+            if (this.args.phoneBookUser != null) {
                 AuthorizationSetupHelper.create()
                         .setHost(this)
-                        .setUserEmail(this.args.exampleUser)
-                        .setUserPassword(this.args.exampleUserPassword)
+                        .setUserEmail(this.args.phoneBookUser)
+                        .setUserPassword(this.args.phoneBookUserPassword)
                         .setIsAdmin(false)
-                        .setDocumentKind(Utils.buildKind(ExampleServiceState.class))
+                        .setDocumentKind(Utils.buildKind(PhoneBookServiceState.class))
                         .start();
             }
         }
-        AuthorizationSetupHelper.create()
-                .setHost(this)
-                .setUserEmail(ExampleServiceHost.vidmUser)
-                .setUserPassword(ExampleServiceHost.vidmUserPassword)
-                .setIsAdmin(true)
-                .setDocumentKind(Utils.buildKind(ExampleServiceState.class))
-                .start();
 
         setAuthorizationContext(null);
 
