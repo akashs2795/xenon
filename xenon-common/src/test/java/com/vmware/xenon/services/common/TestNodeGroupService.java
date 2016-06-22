@@ -24,6 +24,7 @@ import java.util.Date;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.logging.Logger;
 
 import org.junit.After;
 import org.junit.Before;
@@ -180,7 +182,8 @@ public class TestNodeGroupService {
         if (current.name == null) {
             return false;
         }
-        if (!CUSTOM_EXAMPLE_SERVICE_KIND.equals(current.documentKind)) {
+        if (!this.host.isRemotePeerTest() &&
+                !CUSTOM_EXAMPLE_SERVICE_KIND.equals(current.documentKind)) {
             return false;
         }
         return current.name.equals(initial.name);
@@ -234,6 +237,13 @@ public class TestNodeGroupService {
 
         for (VerificationHost h1 : this.host.getInProcessHostMap().values()) {
             setUpPeerHostWithAdditionalServices(h1);
+        }
+
+        // If the peer hosts are remote, then we undo CUSTOM_EXAMPLE_SERVICE_KIND
+        // from the KINDS cache and use the real documentKind of ExampleService.
+        if (this.host.isRemotePeerTest()) {
+            Utils.registerKind(ExampleServiceState.class,
+                    Utils.toDocumentKind(ExampleServiceState.class));
         }
     }
 
@@ -366,6 +376,14 @@ public class TestNodeGroupService {
 
     @Test
     public void customNodeGroupWithObservers() throws Throwable {
+        for (int i = 0; i < this.iterationCount; i++) {
+            Logger.getAnonymousLogger().info("Iteration: " + i);
+            verifyCustomNodeGroupWithObservers();
+            tearDown();
+        }
+    }
+
+    private void verifyCustomNodeGroupWithObservers() throws Throwable {
         setUp(this.nodeCount);
         // on one of the hosts create the custom group but with self as an observer. That peer should
         // never receive replicated or broadcast requests
@@ -392,12 +410,18 @@ public class TestNodeGroupService {
             h.startServiceAndWait(CustomNodeGroupFactoryService.class, customFactoryLink);
         }
 
+        URI customNodeGroupServiceOnObserver = UriUtils
+                .buildUri(observerHostUri, CUSTOM_NODE_GROUP);
         Map<URI, EnumSet<NodeOption>> expectedOptionsPerNode = new HashMap<>();
-        expectedOptionsPerNode.put(UriUtils.buildUri(observerHostUri, CUSTOM_NODE_GROUP),
+        expectedOptionsPerNode.put(customNodeGroupServiceOnObserver,
                 observerSelfState.options);
 
         this.host.joinNodesAndVerifyConvergence(CUSTOM_NODE_GROUP, this.nodeCount,
                 this.nodeCount, expectedOptionsPerNode);
+        // one of the nodes is observer, so we must set quorum to 2 explicitly
+        this.host.setNodeGroupQuorum(2, customNodeGroupServiceOnObserver);
+        this.host.waitForNodeSelectorQuorumConvergence(CUSTOM_GROUP_NODE_SELECTOR, 2);
+        this.host.waitForNodeGroupIsAvailableConvergence(CUSTOM_NODE_GROUP);
 
         int restartCount = 0;
         // verify that the observer node shows up as OBSERVER on all peers, including self
@@ -429,6 +453,10 @@ public class TestNodeGroupService {
         this.host.joinNodesAndVerifyConvergence(this.nodeCount, true);
 
         URI observerFactoryUri = UriUtils.buildUri(observerHostUri, customFactoryLink);
+
+        this.host.waitForReplicatedFactoryServiceAvailable(observerFactoryUri,
+                CUSTOM_GROUP_NODE_SELECTOR);
+
         // create N services on the custom group, verify none of them got created on the observer.
         // We actually post directly to the observer node, which should forward to the other nodes
         Map<URI, ExampleServiceState> serviceStatesOnPost = this.host.doFactoryChildServiceStart(
@@ -456,7 +484,7 @@ public class TestNodeGroupService {
 
         URI existingNodeGroup = this.host.getPeerNodeGroupUri();
 
-        // start  more nodes, insert them to existing group, but with no synchronization required
+        // start more nodes, insert them to existing group, but with no synchronization required
         // start some additional nodes
         int additionalHostCount = this.nodeCount;
         List<ServiceHost> newHosts = Collections.synchronizedList(new ArrayList<>());
@@ -1356,6 +1384,9 @@ public class TestNodeGroupService {
             totalOperations += this.serviceCount;
 
             if (this.testDurationSeconds == 0) {
+                // various validation tests, executed just once, ignored in long running test
+                this.host.doExampleServiceUpdateAndQueryByVersion(this.host.getPeerHostUri(),
+                        this.serviceCount);
                 verifyReplicatedForcedPostAfterDelete(childStates);
                 verifyInstantNotFoundFailureOnBadLinks();
                 verifyReplicatedIdempotentPost(childStates);
@@ -2179,20 +2210,20 @@ public class TestNodeGroupService {
         authHelper = new AuthorizationHelper(this.host);
 
         // relax quorum to allow for divergent writes, on independent nodes (not yet joined)
-        this.host.setNodeGroupQuorum(1);
+
         this.host.setSystemAuthorizationContext();
 
         // Create the same users and roles on every peer independently
         Map<ServiceHost, Collection<String>> roleLinksByHost = new HashMap<>();
         for (VerificationHost h : this.host.getInProcessHostMap().values()) {
-            authHelper.createUserService(h, "jane@doe.com");
-            authHelper.createRoles(h);
+            String email = "jane@doe.com";
+            authHelper.createUserService(h, email);
+            authHelper.createRoles(h, email);
         }
 
         // Get roles from all nodes
         Map<ServiceHost, Map<URI, RoleState>> roleStateByHost = getRolesByHost(roleLinksByHost);
 
-        this.host.setNodeGroupQuorum(this.nodeCount);
         // Join nodes to force synchronization and convergence
         this.host.joinNodesAndVerifyConvergence(this.host.getPeerCount());
 
@@ -2254,7 +2285,7 @@ public class TestNodeGroupService {
         // verify restart, with authorization.
         // stop one host
         VerificationHost hostToStop = this.host.getInProcessHostMap().values().iterator().next();
-        restartAuthorizedHost(exampleLinks, exampleTaskLinks, hostToStop);
+        stopAndRestartHost(exampleLinks, exampleTaskLinks, hostToStop);
     }
 
     private void createReplicatedExampleTasks(Set<String> exampleTaskLinks, String name)
@@ -2311,8 +2342,9 @@ public class TestNodeGroupService {
         RoundRobinIterator<VerificationHost> it = new RoundRobinIterator<>(hosts);
         int exampleServiceCount = this.serviceCount;
 
+        String userLink = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHZ_USERS, "jane@doe.com");
         // Verify we can assert identity and make a request to every host
-        this.host.assumeIdentity(AuthorizationHelper.USER_SERVICE_PATH, null);
+        this.host.assumeIdentity(userLink);
 
         // Sample body that this user is authorized to create
         ExampleServiceState exampleServiceState = new ExampleServiceState();
@@ -2327,12 +2359,16 @@ public class TestNodeGroupService {
                     return;
                 }
 
-                // Verify the user is set as principal
-                ExampleServiceState state = o.getBody(ExampleServiceState.class);
-                assertEquals(state.documentAuthPrincipalLink,
-                        AuthorizationHelper.USER_SERVICE_PATH);
-                exampleLinks.add(state.documentSelfLink);
-                this.host.completeIteration();
+                try {
+                    // Verify the user is set as principal
+                    ExampleServiceState state = o.getBody(ExampleServiceState.class);
+                    assertEquals(state.documentAuthPrincipalLink,
+                            userLink);
+                    exampleLinks.add(state.documentSelfLink);
+                    this.host.completeIteration();
+                } catch (Throwable e2) {
+                    this.host.failIteration(e2);
+                }
             };
             this.host.send(Operation
                     .createPost(UriUtils.buildFactoryUri(it.next(), ExampleService.class))
@@ -2366,7 +2402,7 @@ public class TestNodeGroupService {
         this.host.toggleNegativeTestMode(false);
     }
 
-    private void restartAuthorizedHost(Set<String> exampleLinks, Set<String> exampleTaskLinks,
+    private void stopAndRestartHost(Set<String> exampleLinks, Set<String> exampleTaskLinks,
             VerificationHost hostToStop)
             throws Throwable, InterruptedException {
         // relax quorum
@@ -2390,6 +2426,10 @@ public class TestNodeGroupService {
         // any example service instances, by specifying a name value we know will not match anything
         createReplicatedExampleTasks(exampleTaskLinks, UUID.randomUUID().toString());
 
+        // delete some of the task links, to test synchronization of deleted entries on the restarted
+        // host
+        Set<String> deletedExampleLinks = deleteSomeServices(exampleLinks);
+
         // increase quorum on existing nodes, so they wait for new node
         this.host.setNodeGroupQuorum(this.nodeCount);
 
@@ -2412,16 +2452,40 @@ public class TestNodeGroupService {
         this.host.resetAuthorizationContext();
 
         this.host.waitFor("Task services not started in restarted host:" + exampleTaskLinks, () -> {
-            return checkChildServicesIfStarted(exampleTaskLinks, hostToStop);
+            return checkChildServicesIfStarted(exampleTaskLinks, hostToStop) == 0;
         });
 
-        // verify all services are restarted
+        // verify all services, not previously deleted, are restarted
         this.host.waitFor("Services not started in restarted host:" + exampleLinks, () -> {
-            return checkChildServicesIfStarted(exampleLinks, hostToStop);
+            return checkChildServicesIfStarted(exampleLinks, hostToStop) == 0;
+        });
+
+        int deletedCount = deletedExampleLinks.size();
+        this.host.waitFor("Deleted services still present in restarted host", () -> {
+            return checkChildServicesIfStarted(deletedExampleLinks, hostToStop) == deletedCount;
         });
     }
 
-    private boolean checkChildServicesIfStarted(Set<String> exampleTaskLinks,
+    private Set<String> deleteSomeServices(Set<String> exampleLinks)
+            throws Throwable {
+        int deleteCount = exampleLinks.size() / 3;
+        Iterator<String> itLinks = exampleLinks.iterator();
+        Set<String> deletedExampleLinks = new HashSet<>();
+        this.host.testStart(deleteCount);
+        for (int i = 0; i < deleteCount; i++) {
+            String link = itLinks.next();
+            deletedExampleLinks.add(link);
+            exampleLinks.remove(link);
+            Operation delete = Operation.createDelete(this.host.getPeerServiceUri(link))
+                    .setCompletion(this.host.getCompletion());
+            this.host.send(delete);
+        }
+        this.host.testWait();
+        this.host.log("Deleted links: %s", deletedExampleLinks);
+        return deletedExampleLinks;
+    }
+
+    private int checkChildServicesIfStarted(Set<String> exampleTaskLinks,
             VerificationHost host) {
         this.host.setSystemAuthorizationContext();
         int notStartedCount = 0;
@@ -2436,7 +2500,7 @@ public class TestNodeGroupService {
             this.host.log("%d services not started on %s (%s)", notStartedCount,
                     host.getPublicUri(), host.getId());
         }
-        return notStartedCount == 0;
+        return notStartedCount;
     }
 
     private Map<ServiceHost, Map<URI, RoleState>> getRolesByHost(

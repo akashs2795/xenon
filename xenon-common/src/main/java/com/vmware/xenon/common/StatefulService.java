@@ -501,6 +501,11 @@ public class StatefulService implements Service {
             return false;
         }
 
+        if (request.getRequestHeader(Operation.TRANSACTION_HEADER) != null) {
+            // Skip update checking in case of a transaction control operation
+            return false;
+        }
+
         if (!hasOption(ServiceOption.STRICT_UPDATE_CHECKING)) {
             return false;
         }
@@ -698,6 +703,7 @@ public class StatefulService implements Service {
                 }
 
                 linkedState.documentSelfLink = this.context.selfLink;
+                linkedState.documentUpdateAction = op.getAction().name();
                 if (linkedState.documentKind == null) {
                     linkedState.documentKind = Utils.buildKind(this.context.stateType);
                 }
@@ -906,7 +912,8 @@ public class StatefulService implements Service {
         }
 
         if (latestState.documentVersion < this.context.version
-                || latestState.documentEpoch < this.context.epoch) {
+                || (latestState.documentEpoch != null
+                        && latestState.documentEpoch < this.context.epoch)) {
             return;
         }
 
@@ -1304,15 +1311,11 @@ public class StatefulService implements Service {
     @Override
     public void toggleOption(ServiceOption option, boolean enable) {
 
-        if (option == ServiceOption.IDEMPOTENT_POST) {
-            throw new IllegalArgumentException("Option not supported on singleton services."
-                    + " Set this service option on the factory service instead.");
-        }
-
         if (option != ServiceOption.HTML_USER_INTERFACE
                 && option != ServiceOption.DOCUMENT_OWNER
                 && option != ServiceOption.PERIODIC_MAINTENANCE
-                && option != ServiceOption.INSTRUMENTATION) {
+                && option != ServiceOption.INSTRUMENTATION
+                && option != ServiceOption.TRANSACTION_PENDING) {
 
             if (getProcessingStage() != Service.ProcessingStage.CREATED) {
                 throw new IllegalStateException("Service already started");
@@ -1323,9 +1326,9 @@ public class StatefulService implements Service {
             toggleOption(ServiceOption.CONCURRENT_GET_HANDLING, true);
         }
 
-        if (option == ServiceOption.PERIODIC_MAINTENANCE && hasOption(ServiceOption
-                .ON_DEMAND_LOAD) || option == ServiceOption.ON_DEMAND_LOAD && hasOption
-                (ServiceOption.PERIODIC_MAINTENANCE)) {
+        if (option == ServiceOption.PERIODIC_MAINTENANCE && hasOption(ServiceOption.ON_DEMAND_LOAD)
+                || option == ServiceOption.ON_DEMAND_LOAD
+                        && hasOption(ServiceOption.PERIODIC_MAINTENANCE)) {
             throw new IllegalArgumentException("Service option PERIODIC_MAINTENANCE and " +
                     "ON_DEMAND_LOAD cannot co-exists.");
         }
@@ -1522,7 +1525,8 @@ public class StatefulService implements Service {
     }
 
     protected void doLogging(Level level, Supplier<String> messageSupplier) {
-        String uri = this.context.host != null && getUri() != null ? getUri().toString() : this.getClass().getSimpleName();
+        String uri = this.context.host != null && getUri() != null ? getUri().toString()
+                : this.getClass().getSimpleName();
         Logger lg = Logger.getLogger(this.getClass().getName());
         Utils.log(lg, 3, uri, level, messageSupplier);
     }
@@ -1546,9 +1550,11 @@ public class StatefulService implements Service {
     @Override
     public void handleMaintenance(Operation post) {
         ServiceMaintenanceRequest request = post.getBody(ServiceMaintenanceRequest.class);
-        if (request.reasons.contains(ServiceMaintenanceRequest.MaintenanceReason.PERIODIC_SCHEDULE)) {
+        if (request.reasons
+                .contains(ServiceMaintenanceRequest.MaintenanceReason.PERIODIC_SCHEDULE)) {
             this.handlePeriodicMaintenance(post);
-        } else if (request.reasons.contains(ServiceMaintenanceRequest.MaintenanceReason.NODE_GROUP_CHANGE)) {
+        } else if (request.reasons
+                .contains(ServiceMaintenanceRequest.MaintenanceReason.NODE_GROUP_CHANGE)) {
             this.handleNodeGroupMaintenance(post);
         } else {
             post.complete();
@@ -1702,7 +1708,8 @@ public class StatefulService implements Service {
 
         if (micros > 0 && micros < Service.MIN_MAINTENANCE_INTERVAL_MICROS) {
             logWarning("Maintenance interval %d is less than the minimum interval %d"
-                    + ", reducing to min interval", micros, Service.MIN_MAINTENANCE_INTERVAL_MICROS);
+                    + ", reducing to min interval", micros,
+                    Service.MIN_MAINTENANCE_INTERVAL_MICROS);
             micros = Service.MIN_MAINTENANCE_INTERVAL_MICROS;
         }
 
@@ -1816,17 +1823,26 @@ public class StatefulService implements Service {
             }
             this.context.txCoordinatorLinks.add(txCoordinatorLink);
         }
+
+        toggleOption(ServiceOption.TRANSACTION_PENDING, true);
     }
 
     /**
      * Removes the specified coordinator link from this service' pending transactions
      */
     void removePendingTransaction(String txCoordinatorLink) {
+        boolean toggleTransactionPending = false;
+
         synchronized (this.context) {
             if (this.context.txCoordinatorLinks == null) {
                 return;
             }
             this.context.txCoordinatorLinks.remove(txCoordinatorLink);
+            toggleTransactionPending = this.context.txCoordinatorLinks.isEmpty();
+        }
+
+        if (toggleTransactionPending) {
+            toggleOption(ServiceOption.TRANSACTION_PENDING, false);
         }
     }
 

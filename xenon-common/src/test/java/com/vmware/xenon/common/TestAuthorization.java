@@ -15,6 +15,8 @@ package com.vmware.xenon.common;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.net.URI;
@@ -42,14 +44,22 @@ import com.vmware.xenon.common.Operation.AuthorizationContext;
 import com.vmware.xenon.common.Operation.CompletionHandler;
 import com.vmware.xenon.common.Service.Action;
 import com.vmware.xenon.common.test.AuthorizationHelper;
+import com.vmware.xenon.common.test.TestContext;
 import com.vmware.xenon.common.test.VerificationHost;
+import com.vmware.xenon.services.common.AuthorizationCacheUtils;
 import com.vmware.xenon.services.common.AuthorizationContextService;
 import com.vmware.xenon.services.common.ExampleService;
 import com.vmware.xenon.services.common.ExampleService.ExampleServiceState;
 import com.vmware.xenon.services.common.GuestUserService;
+import com.vmware.xenon.services.common.MinimalTestService;
 import com.vmware.xenon.services.common.QueryTask;
 import com.vmware.xenon.services.common.QueryTask.Query;
 import com.vmware.xenon.services.common.QueryTask.Query.Builder;
+import com.vmware.xenon.services.common.ResourceGroupService.ResourceGroupState;
+import com.vmware.xenon.services.common.RoleService.RoleState;
+import com.vmware.xenon.services.common.UserGroupService;
+import com.vmware.xenon.services.common.UserGroupService.UserGroupState;
+import com.vmware.xenon.services.common.UserService.UserState;
 
 public class TestAuthorization extends BasicTestCase {
 
@@ -90,7 +100,7 @@ public class TestAuthorization extends BasicTestCase {
         this.host.setSystemAuthorizationContext();
         this.authHelper = new AuthorizationHelper(this.host);
         this.userServicePath = this.authHelper.createUserService(this.host, "jane@doe.com");
-        this.authHelper.createRoles(this.host);
+        this.authHelper.createRoles(this.host, "jane@doe.com");
         this.host.resetAuthorizationContext();
     }
 
@@ -127,7 +137,7 @@ public class TestAuthorization extends BasicTestCase {
         };
 
         // assume authorized user identity
-        this.host.assumeIdentity(this.userServicePath, null);
+        this.host.assumeIdentity(this.userServicePath);
 
         // Verify startService
         Operation post = Operation.createPost(UriUtils.buildUri(this.host, serviceLink));
@@ -153,7 +163,7 @@ public class TestAuthorization extends BasicTestCase {
         this.host.testWait();
 
         // assume authorized user identity
-        this.host.assumeIdentity(this.userServicePath, null);
+        this.host.assumeIdentity(this.userServicePath);
 
         // restart service
         post = Operation.createPost(UriUtils.buildUri(this.host, serviceLink));
@@ -183,7 +193,7 @@ public class TestAuthorization extends BasicTestCase {
 
     @Test
     public void queryWithDocumentAuthPrincipal() throws Throwable {
-        this.host.assumeIdentity(this.userServicePath, null);
+        this.host.assumeIdentity(this.userServicePath);
         createExampleServices("jane");
 
         // do a direct, simple query first
@@ -226,7 +236,7 @@ public class TestAuthorization extends BasicTestCase {
 
     @Test
     public void contextPropagationOnScheduleAndRunContext() throws Throwable {
-        this.host.assumeIdentity(this.userServicePath, null);
+        this.host.assumeIdentity(this.userServicePath);
 
         AuthorizationContext callerAuthContext = OperationContext.getAuthorizationContext();
         Runnable task = () -> {
@@ -311,7 +321,7 @@ public class TestAuthorization extends BasicTestCase {
     public void actionBasedAuthorization() throws Throwable {
 
         // Assume Jane's identity
-        this.host.assumeIdentity(this.userServicePath, null);
+        this.host.assumeIdentity(this.userServicePath);
 
         // add docs accessible by jane
         Map<URI, ExampleServiceState> exampleServices = createExampleServices("jane");
@@ -426,7 +436,7 @@ public class TestAuthorization extends BasicTestCase {
         this.host.testWait();
 
         // Assume Jane's identity
-        this.host.assumeIdentity(this.userServicePath, null);
+        this.host.assumeIdentity(this.userServicePath);
         // add docs accessible by jane
         exampleServices.putAll(createExampleServices("jane"));
 
@@ -471,6 +481,204 @@ public class TestAuthorization extends BasicTestCase {
         String authToken = generateAuthToken(this.userServicePath);
 
         verifyJaneAccess(exampleServices, authToken);
+    }
+
+    private AuthorizationContext assumeIdentityAndGetContext(String userLink,
+            Service privilegedService, boolean populateCache) throws Throwable {
+        AuthorizationContext authContext = this.host.assumeIdentity(userLink);
+        if (populateCache) {
+            this.host.sendAndWaitExpectSuccess(
+                    Operation.createGet(UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK)));
+        }
+        return this.host.getAuthorizationContext(privilegedService, authContext.getToken());
+    }
+
+    @Test
+    public void testAuthzUtils() throws Throwable {
+        this.host.setSystemAuthorizationContext();
+        AuthorizationHelper authHelperForFoo = new AuthorizationHelper(this.host);
+        String email = "foo@foo.com";
+        String fooUserLink = authHelperForFoo.createUserService(this.host, email);
+        UserState patchState = new UserState();
+        patchState.userGroupLinks = new HashSet<String>();
+        patchState.userGroupLinks.add(UriUtils.buildUriPath(
+                UserGroupService.FACTORY_LINK, authHelperForFoo.getUserGroupName(email)));
+        authHelperForFoo.patchUserService(this.host, fooUserLink, patchState);
+        // create a user group based on a query for userGroupLink
+        authHelperForFoo.createRoles(this.host, email, true);
+        // spin up a privileged service to query for auth context
+        MinimalTestService s = new MinimalTestService();
+        this.host.addPrivilegedService(MinimalTestService.class);
+        this.host.startServiceAndWait(s, UUID.randomUUID().toString(), null);
+        this.host.resetSystemAuthorizationContext();
+
+        // get the user group service and clear the authz cache
+        assertNotNull(assumeIdentityAndGetContext(fooUserLink, s, true));
+        this.host.setSystemAuthorizationContext();
+        Operation getUserGroupStateOp =
+                Operation.createGet(UriUtils.buildUri(this.host, authHelperForFoo.getUserGroupLink()));
+        Operation resultOp = this.host.waitForResponse(getUserGroupStateOp);
+        UserGroupState userGroupState = resultOp.getBody(UserGroupState.class);
+        Operation clearAuthOp = new Operation();
+        TestContext ctx = this.host.testCreate(1);
+        clearAuthOp.setCompletion(ctx.getCompletion());
+        AuthorizationCacheUtils.clearAuthzCacheForUserGroup(s, clearAuthOp, userGroupState);
+        this.host.testWait(ctx);
+        this.host.resetSystemAuthorizationContext();
+        assertNull(assumeIdentityAndGetContext(fooUserLink, s, false));
+
+        // get the resource group and clear the authz cache
+        assertNotNull(assumeIdentityAndGetContext(fooUserLink, s, true));
+        this.host.setSystemAuthorizationContext();
+        Operation getResourceGroupStateOp =
+                Operation.createGet(UriUtils.buildUri(this.host, authHelperForFoo.getResourceGroupLink()));
+        resultOp = this.host.waitForResponse(getResourceGroupStateOp);
+        ResourceGroupState resourceGroupState = resultOp.getBody(ResourceGroupState.class);
+        clearAuthOp = new Operation();
+        ctx = this.host.testCreate(1);
+        clearAuthOp.setCompletion(ctx.getCompletion());
+        AuthorizationCacheUtils.clearAuthzCacheForResourceGroup(s, clearAuthOp, resourceGroupState);
+        this.host.testWait(ctx);
+        this.host.resetSystemAuthorizationContext();
+        assertNull(assumeIdentityAndGetContext(fooUserLink, s, false));
+
+        // get the role service and clear the authz cache
+        assertNotNull(assumeIdentityAndGetContext(fooUserLink, s, true));
+        this.host.setSystemAuthorizationContext();
+        Operation getRoleStateOp =
+                Operation.createGet(UriUtils.buildUri(this.host, authHelperForFoo.getRoleLink()));
+        resultOp = this.host.waitForResponse(getRoleStateOp);
+        RoleState roleState = resultOp.getBody(RoleState.class);
+        clearAuthOp = new Operation();
+        ctx = this.host.testCreate(1);
+        clearAuthOp.setCompletion(ctx.getCompletion());
+        AuthorizationCacheUtils.clearAuthzCacheForRole(s, clearAuthOp, roleState);
+        this.host.testWait(ctx);
+        this.host.resetSystemAuthorizationContext();
+        assertNull(assumeIdentityAndGetContext(fooUserLink, s, false));
+
+        // finally, get the user service and clear the authz cache
+        assertNotNull(assumeIdentityAndGetContext(fooUserLink, s, true));
+        this.host.setSystemAuthorizationContext();
+        Operation getUserStateOp =
+                Operation.createGet(UriUtils.buildUri(this.host, fooUserLink));
+        resultOp = this.host.waitForResponse(getUserStateOp);
+        UserState userState = resultOp.getBody(UserState.class);
+        clearAuthOp = new Operation();
+        ctx = this.host.testCreate(1);
+        clearAuthOp.setCompletion(ctx.getCompletion());
+        AuthorizationCacheUtils.clearAuthzCacheForUser(s, clearAuthOp, userState.documentSelfLink);
+        this.host.testWait(ctx);
+        this.host.resetSystemAuthorizationContext();
+        assertNull(assumeIdentityAndGetContext(fooUserLink, s, false));
+    }
+
+    @Test
+    public void testUserGroupChange() throws Throwable {
+        // create users and roles for a users 'foo@foo.com' and 'bar@foo.com', 'foobar@bar.com'
+        this.host.setSystemAuthorizationContext();
+        AuthorizationHelper authHelperForFoo = new AuthorizationHelper(this.host);
+        String email = "foo@foo.com";
+        String fooUserLink = authHelperForFoo.createUserService(this.host, email);
+        UserState patchState = new UserState();
+        patchState.userGroupLinks = new HashSet<String>();
+        patchState.userGroupLinks.add(UriUtils.buildUriPath(
+                UserGroupService.FACTORY_LINK, authHelperForFoo.getUserGroupName(email)));
+        authHelperForFoo.patchUserService(this.host, fooUserLink, patchState);
+        // create a user group based on a query for userGroupLink
+        authHelperForFoo.createRoles(this.host, email, false);
+        AuthorizationHelper authHelperForBar = new AuthorizationHelper(this.host);
+        email = "bar@foo.com";
+        String barUserLink = authHelperForBar.createUserService(this.host, email);
+        // create a user group based on the UserService email field
+        authHelperForBar.createRoles(this.host, email);
+        AuthorizationHelper authHelperForFooBar = new AuthorizationHelper(this.host);
+        email = "foobar@foo.com";
+        authHelperForFooBar.createUserService(this.host, email);
+        authHelperForFooBar.createRoles(this.host, email);
+        // spin up a privileged service to query for auth context
+        MinimalTestService s = new MinimalTestService();
+        this.host.addPrivilegedService(MinimalTestService.class);
+        this.host.startServiceAndWait(s, UUID.randomUUID().toString(), null);
+        this.host.resetSystemAuthorizationContext();
+        // assume identity as foo@foo.com, invoke a GET on a factory to populate
+        // the authz cache
+        AuthorizationContext fooAuthContext = this.host.assumeIdentity(fooUserLink);
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createGet(UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK)));
+        AuthorizationContext authContextFromCache = this.host.getAuthorizationContext(s, fooAuthContext.getToken());
+        assertNotNull(authContextFromCache);
+        // delete the user group associated with the user; this should clear out the authz cache entry
+        this.host.setSystemAuthorizationContext();
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createDelete(UriUtils.buildUri(this.host, authHelperForFoo.getUserGroupLink())));
+        this.host.resetSystemAuthorizationContext();
+        authContextFromCache = this.host.getAuthorizationContext(s, fooAuthContext.getToken());
+        assertNull(authContextFromCache);
+        // next, assume identity as bar@foo.com
+        AuthorizationContext barAuthContext = this.host.assumeIdentity(barUserLink);
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createGet(UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK)));
+        authContextFromCache = this.host.getAuthorizationContext(s, barAuthContext.getToken());
+        assertNotNull(authContextFromCache);
+        // create a new role and associate it with the user
+        this.host.setSystemAuthorizationContext();
+        Query q = Builder.create()
+                .addFieldClause(
+                        ExampleServiceState.FIELD_NAME_KIND,
+                        Utils.buildKind(ExampleServiceState.class))
+                .build();
+        this.host.testStart(1);
+        String newResourceGroupLink = authHelperForBar.createResourceGroup(this.host, "new-rg", q);
+        this.host.testWait();
+        Set<Service.Action> actions = new HashSet<Service.Action>(Arrays.asList(Action.GET, Action.POST));
+        this.host.testStart(2);
+        authHelperForBar.createRole(this.host, authHelperForBar.getUserGroupLink(), newResourceGroupLink, actions);
+        authHelperForBar.createRole(this.host, authHelperForFooBar.getUserGroupLink(), newResourceGroupLink, actions);
+        this.host.testWait();
+        //delete the user group for foobar@foo.com.
+        //Updating the resource group should be able to handle the fact that the user group does not exist
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createDelete(UriUtils.buildUri(this.host, authHelperForFooBar.getUserGroupLink())));
+        this.host.resetSystemAuthorizationContext();
+        // verify that the auth credentials have been cleared
+        authContextFromCache = this.host.getAuthorizationContext(s, barAuthContext.getToken());
+        assertNull(authContextFromCache);
+        // login as as bar@bar.com once more
+        barAuthContext = this.host.assumeIdentity(barUserLink);
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createGet(UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK)));
+        authContextFromCache = this.host.getAuthorizationContext(s, barAuthContext.getToken());
+        assertNotNull(authContextFromCache);
+        // update the resource group associated with the user
+        Query updateResourceGroupQuery = Builder.create()
+                .addFieldClause(
+                        ExampleServiceState.FIELD_NAME_NAME,
+                        "bar")
+                .build();
+        this.host.setSystemAuthorizationContext();
+        ResourceGroupState resourceGroupState = new ResourceGroupState();
+        resourceGroupState.query = updateResourceGroupQuery;
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createPut(UriUtils.buildUri(this.host, newResourceGroupLink))
+                .setBody(resourceGroupState));
+        this.host.resetSystemAuthorizationContext();
+        // verify that the the authz cache has been invalidated
+        authContextFromCache = this.host.getAuthorizationContext(s, barAuthContext.getToken());
+        assertNull(authContextFromCache);
+        // assume identity as foo again
+        fooAuthContext = this.host.assumeIdentity(fooUserLink);
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createGet(UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK)));
+        authContextFromCache = this.host.getAuthorizationContext(s, fooAuthContext.getToken());
+        assertNotNull(authContextFromCache);
+        this.host.setSystemAuthorizationContext();
+        // delete the user service; the authz cache should be cleared
+        this.host.sendAndWaitExpectSuccess(
+                Operation.createDelete(UriUtils.buildUri(this.host, fooUserLink)));
+        this.host.resetSystemAuthorizationContext();
+        authContextFromCache = this.host.getAuthorizationContext(s, fooAuthContext.getToken());
+        assertNull(authContextFromCache);
     }
 
     private void verifyJaneAccess(Map<URI, ExampleServiceState> exampleServices, String authToken) throws Throwable {

@@ -27,14 +27,14 @@ import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.services.common.QueryTask.QuerySpecification;
 
-public class LuceneQueryPageService extends StatelessService {
+public class QueryPageService extends StatelessService {
     public static final String KIND = Utils.buildKind(QueryTask.class);
 
     private QuerySpecification spec;
     private String documentSelfLink;
     private String indexLink;
 
-    public LuceneQueryPageService(QuerySpecification spec, String indexLink) {
+    public QueryPageService(QuerySpecification spec, String indexLink) {
         super(QueryTask.class);
         this.spec = spec;
         this.indexLink = indexLink;
@@ -145,7 +145,6 @@ public class LuceneQueryPageService extends StatelessService {
         }
 
         task.taskInfo.stage = TaskStage.FINISHED;
-
-        get.setBodyNoCloning(task).complete();
+        QueryTaskUtils.expandLinks(getHost(), task, get);
     }
 }

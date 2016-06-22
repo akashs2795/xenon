@@ -192,12 +192,16 @@ public interface Service extends ServiceRequestSender {
          */
         FACTORY_ITEM,
 
-
         /**
          * Set by runtime. Service is currently assigned ownership of the replicated document. Any
          * work initiated through an update should only happen on this instance
          */
         DOCUMENT_OWNER,
+
+        /**
+         * Set by runtime. Service has one or more pending transactions.
+         */
+        TRANSACTION_PENDING,
 
         NONE
     }
@@ -300,6 +304,13 @@ public interface Service extends ServiceRequestSender {
     static final String STAT_NAME_VERSION_IN_CONFLICT = "stateVersionInConflict";
     static final String STAT_NAME_PAUSE_COUNT = "pauseCount";
     static final String STAT_NAME_RESUME_COUNT = "resumeCount";
+
+    // Global stats tracked by ServiceHostManagementService
+    static final String STAT_NAME_SERVICE_PAUSE_COUNT = "servicePauseCount";
+    static final String STAT_NAME_SERVICE_RESUME_COUNT = "serviceResumeCount";
+    static final String STAT_NAME_SERVICE_CACHE_CLEAR_COUNT = "serviceCacheClearCount";
+    static final String STAT_NAME_ODL_CACHE_CLEAR_COUNT = "onDemandLoadCacheClearCount";
+    static final String STAT_NAME_ODL_STOP_COUNT = "onDemandLoadStopCount";
 
     /**
      * Estimate on run time context cost in bytes, per service instance. Services should not use instanced

@@ -21,8 +21,14 @@ import static org.junit.Assert.assertNull;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -64,10 +70,31 @@ public class TestServiceDocument {
         source.x = SOME_INT_VALUE;
         source.ignore = SOME_IGNORE_VALUE;
         source.documentExpirationTimeMicros = SOME_EXPIRATION_VALUE;
+        source.listOfStrings = new ArrayList<String>();
+        source.listOfStrings.add(SOME_STRING_VALUE);
+        source.mapOfStrings = new HashMap<String, String>();
+        source.mapOfStrings.put(SOME_STRING_VALUE, SOME_STRING_VALUE);
+        source.setOfStrings = new HashSet<String>();
+        source.setOfStrings.add(SOME_STRING_VALUE);
+        source.intArray = new int[2];
+        source.intArray[0] = SOME_INT_VALUE;
+        source.intArray[1] = SOME_INT_VALUE;
         MergeTest patch = new MergeTest();
         patch.s = SOME_OTHER_STRING_VALUE;
         patch.x = SOME_OTHER_INT_VALUE;
         patch.ignore = SOME_OTHER_IGNORE_VALUE;
+        patch.listOfStrings = new ArrayList<String>();
+        patch.listOfStrings.add(SOME_STRING_VALUE);
+        patch.listOfStrings.add(SOME_OTHER_STRING_VALUE);
+        patch.setOfStrings = new HashSet<String>();
+        patch.setOfStrings.add(SOME_STRING_VALUE);
+        patch.setOfStrings.add(SOME_OTHER_STRING_VALUE);
+        patch.mapOfStrings = new HashMap<String, String>();
+        patch.mapOfStrings.put(SOME_STRING_VALUE, SOME_STRING_VALUE);
+        patch.mapOfStrings.put(SOME_OTHER_STRING_VALUE, SOME_OTHER_STRING_VALUE);
+        patch.intArray = new int[2];
+        patch.intArray[0] = SOME_INT_VALUE;
+        patch.intArray[1] = SOME_INT_VALUE;
         patch.documentExpirationTimeMicros = SOME_OTHER_EXPIRATION_VALUE;
 
         ServiceDocumentDescription d = ServiceDocumentDescription.Builder.create()
@@ -78,6 +105,16 @@ public class TestServiceDocument {
         Assert.assertEquals("Non-annotated ignore field", source.ignore, SOME_IGNORE_VALUE);
         Assert.assertEquals("Auto-annotated expiration field", source.documentExpirationTimeMicros,
                 SOME_OTHER_EXPIRATION_VALUE);
+        Assert.assertEquals("Number of list elements", 3, source.listOfStrings.size());
+        Assert.assertTrue("Check existence of element", source.listOfStrings.contains(SOME_STRING_VALUE));
+        Assert.assertTrue("Check existence of element", source.listOfStrings.contains(SOME_OTHER_STRING_VALUE));
+        Assert.assertEquals("Number of set elements", 2, source.setOfStrings.size());
+        Assert.assertTrue("Check existence of element", source.setOfStrings.contains(SOME_STRING_VALUE));
+        Assert.assertTrue("Check existence of element", source.setOfStrings.contains(SOME_OTHER_STRING_VALUE));
+        Assert.assertEquals("Number of map elements", 2, source.mapOfStrings.size());
+        Assert.assertTrue("Check existence of element", source.mapOfStrings.containsKey(SOME_STRING_VALUE));
+        Assert.assertTrue("Check existence of element", source.mapOfStrings.containsKey(SOME_OTHER_STRING_VALUE));
+        Assert.assertEquals("Number of Array elements", 2, source.intArray.length);
     }
 
     /**
@@ -89,6 +126,13 @@ public class TestServiceDocument {
         MergeTest patch = new MergeTest();
         patch.s = SOME_OTHER_STRING_VALUE;
         patch.x = SOME_OTHER_INT_VALUE;
+        patch.listOfStrings = new ArrayList<String>();
+        patch.listOfStrings.add(SOME_OTHER_STRING_VALUE);
+        patch.mapOfStrings = new HashMap<String, String>();
+        patch.mapOfStrings.put(SOME_OTHER_STRING_VALUE, SOME_OTHER_STRING_VALUE);
+        patch.intArray = new int[2];
+        patch.intArray[0] = SOME_INT_VALUE;
+        patch.intArray[1] = SOME_INT_VALUE;
         patch.ignore = SOME_OTHER_IGNORE_VALUE;
         ServiceDocumentDescription d = ServiceDocumentDescription.Builder.create()
                 .buildDescription(MergeTest.class);
@@ -96,6 +140,11 @@ public class TestServiceDocument {
         Assert.assertEquals("Annotated s field", source.s, SOME_OTHER_STRING_VALUE);
         Assert.assertEquals("Annotated x field", source.x, SOME_OTHER_INT_VALUE);
         Assert.assertNull("Non-annotated ignore field", source.ignore);
+        Assert.assertEquals("Number of list elements", 1, source.listOfStrings.size());
+        Assert.assertTrue("Check existence of element", source.listOfStrings.contains(SOME_OTHER_STRING_VALUE));
+        Assert.assertEquals("Number of map elements", 1, source.mapOfStrings.size());
+        Assert.assertTrue("Check existence of element", source.mapOfStrings.containsKey(SOME_OTHER_STRING_VALUE));
+        Assert.assertEquals("Number of Array elements", 2, source.intArray.length);
     }
 
     @Test
@@ -215,6 +264,14 @@ public class TestServiceDocument {
         @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
         public String s;
         public String ignore;
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
+        public List<String> listOfStrings;
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
+        public Set<String> setOfStrings;
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
+        public Map<String, String> mapOfStrings;
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
+        public int[] intArray;
     }
 
 
@@ -242,6 +299,13 @@ public class TestServiceDocument {
 
         @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.OPTIONAL)
         public Enum<?> justEnum;
+
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.ID)
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.REQUIRED)
+        public String requiredId;
+
+        @UsageOption(option = ServiceDocumentDescription.PropertyUsageOption.REQUIRED)
+        public String required;
     }
 
     @Test
@@ -251,15 +315,34 @@ public class TestServiceDocument {
         assertEquals(8, desc.serializedStateSizeLimit);
         assertEquals(44, desc.versionRetentionLimit);
 
-        ServiceDocumentDescription.PropertyDescription optDesc = desc.propertyDescriptions.get("opt");
-        assertEquals(optDesc.usageOptions, EnumSet.of(ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL));
-        assertEquals(optDesc.indexingOptions, EnumSet.of(ServiceDocumentDescription.PropertyIndexingOption.STORE_ONLY));
+        ServiceDocumentDescription.PropertyDescription optDesc = desc.propertyDescriptions
+                .get("opt");
+        assertEquals(optDesc.usageOptions,
+                EnumSet.of(ServiceDocumentDescription.PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL));
+        assertEquals(optDesc.indexingOptions,
+                EnumSet.of(ServiceDocumentDescription.PropertyIndexingOption.STORE_ONLY));
         assertEquals(optDesc.exampleValue, "example");
         assertEquals(optDesc.propertyDocumentation, "desc");
 
-        ServiceDocumentDescription.PropertyDescription optsDesc = desc.propertyDescriptions.get("opts");
-        assertEquals(optsDesc.usageOptions, EnumSet.of(ServiceDocumentDescription.PropertyUsageOption.ID, ServiceDocumentDescription.PropertyUsageOption.OPTIONAL));
-        assertEquals(optsDesc.indexingOptions, EnumSet.of(ServiceDocumentDescription.PropertyIndexingOption.SORT, ServiceDocumentDescription.PropertyIndexingOption.EXCLUDE_FROM_SIGNATURE));
+        ServiceDocumentDescription.PropertyDescription optsDesc = desc.propertyDescriptions
+                .get("opts");
+        assertEquals(optsDesc.usageOptions,
+                EnumSet.of(ServiceDocumentDescription.PropertyUsageOption.ID,
+                        ServiceDocumentDescription.PropertyUsageOption.OPTIONAL));
+        assertEquals(optsDesc.indexingOptions,
+                EnumSet.of(ServiceDocumentDescription.PropertyIndexingOption.SORT,
+                        ServiceDocumentDescription.PropertyIndexingOption.EXCLUDE_FROM_SIGNATURE));
+
+        ServiceDocumentDescription.PropertyDescription requiredIdDesc = desc.propertyDescriptions
+                .get("requiredId");
+        assertEquals(requiredIdDesc.usageOptions,
+                EnumSet.of(ServiceDocumentDescription.PropertyUsageOption.REQUIRED,
+                        ServiceDocumentDescription.PropertyUsageOption.ID));
+
+        ServiceDocumentDescription.PropertyDescription requiredDesc = desc.propertyDescriptions
+                .get("required");
+        assertEquals(requiredDesc.usageOptions,
+                EnumSet.of(ServiceDocumentDescription.PropertyUsageOption.REQUIRED));
     }
 
     @Test

@@ -15,18 +15,25 @@ package com.vmware.xenon.services.common;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
+import com.vmware.xenon.common.NodeSelectorService.SelectAndForwardRequest;
+import com.vmware.xenon.common.NodeSelectorService.SelectOwnerResponse;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.Operation.CompletionHandler;
 import com.vmware.xenon.common.OperationJoin;
 import com.vmware.xenon.common.OperationJoin.JoinedCompletionHandler;
 import com.vmware.xenon.common.Service;
 import com.vmware.xenon.common.ServiceHost;
+import com.vmware.xenon.common.ServiceStats;
+import com.vmware.xenon.common.ServiceStats.ServiceStat;
 import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.Utils;
-import com.vmware.xenon.services.common.NodeGroupService.CheckConvergenceRequest;
-import com.vmware.xenon.services.common.NodeGroupService.CheckConvergenceResponse;
 import com.vmware.xenon.services.common.NodeGroupService.NodeGroupState;
 
 public class NodeGroupUtils {
@@ -54,38 +61,64 @@ public class NodeGroupUtils {
     }
 
     /**
-     * Issues a broadcast GET to service/available on all nodes and returns success if at least one
-     * service replied with status OK
+     * Issues a GET to service/stats and looks for {@link Service#STAT_NAME_AVAILABLE}
+     * The request is issued on the node selected as owner, by the node selector co-located
+     * with the service. The stat must have been modified after the most recent node group
+     * change
+     *
+     * This method should be used only on replicated, owner selected factory services
      */
     public static void checkServiceAvailability(CompletionHandler ch, ServiceHost host,
             URI service,
             String selectorPath) {
-        URI available = UriUtils.buildAvailableUri(service);
+        URI statsUri = UriUtils.buildStatsUri(service);
 
         if (selectorPath == null) {
             throw new IllegalArgumentException("selectorPath is required");
         }
-        // we are in multiple node mode, create a broadcast URI since replicated
-        // factories will only be marked available on one node, the owner for the factory
-        available = UriUtils.buildBroadcastRequestUri(available, selectorPath, service.getPath());
 
-        Operation get = Operation.createGet(available).setCompletion((o, e) -> {
+        // Create operation to retrieve stats. This completion will execute after
+        // we determine the owner node
+        Operation get = Operation.createGet(statsUri).setCompletion((o, e) -> {
             if (e != null) {
-                // the broadcast request itself failed
+                host.log(Level.WARNING, "%s to %s failed: %s",
+                        o.getAction(), o.getUri(), e.toString());
                 ch.handle(null, e);
                 return;
             }
 
-            NodeGroupBroadcastResponse rsp = o.getBody(NodeGroupBroadcastResponse.class);
-            // we expect at least one node to not return failure, when its factory is ready
-            if (rsp.failures.size() < rsp.availableNodeCount) {
-                ch.handle(o, null);
+            ServiceStats s = o.getBody(ServiceStats.class);
+            ServiceStat availableStat = s.entries.get(Service.STAT_NAME_AVAILABLE);
+
+            if (availableStat == null || availableStat.latestValue == Service.STAT_VALUE_FALSE) {
+                ch.handle(o, new IllegalStateException("not available"));
                 return;
             }
 
-            ch.handle(o, new IllegalStateException("All services on all nodes not available"));
+            ch.handle(o, null);
         });
-        host.sendRequest(get.setReferer(host.getPublicUri()));
+        get.setReferer(host.getPublicUri())
+                .setExpiration(Utils.getNowMicrosUtc() + host.getOperationTimeoutMicros());
+
+        URI nodeSelector = UriUtils.buildUri(service, selectorPath);
+        SelectAndForwardRequest req = new SelectAndForwardRequest();
+        req.key = service.getPath();
+
+        Operation selectPost = Operation.createPost(nodeSelector)
+                .setReferer(host.getPublicUri())
+                .setBodyNoCloning(req);
+        selectPost.setCompletion((o, e) -> {
+            if (e != null) {
+                host.log(Level.WARNING, "SelectOwner for %s to %s failed: %s",
+                        req.key, nodeSelector, e.toString());
+                ch.handle(get, e);
+                return;
+            }
+            SelectOwnerResponse selectRsp = o.getBody(SelectOwnerResponse.class);
+            URI serviceOnOwner = UriUtils.buildUri(selectRsp.ownerNodeGroupReference,
+                    statsUri.getPath());
+            get.setUri(serviceOnOwner).sendWith(host);
+        }).sendWith(host);
     }
 
     /**
@@ -126,13 +159,19 @@ public class NodeGroupUtils {
                 return;
             }
 
+            Map<URI, Long> membershipUpdateTimes = new HashMap<>();
+            Set<Long> uniqueTimes = new HashSet<>();
             for (Operation peerOp : ops.values()) {
-                CheckConvergenceResponse r = peerOp.getBody(CheckConvergenceResponse.class);
-                if (!r.isConverged) {
-                    String error = String.format("Peer %s is not converged", peerOp.getUri());
-                    parentOp.fail(new IllegalStateException(error));
-                    return;
-                }
+                NodeGroupState rsp = peerOp.getBody(NodeGroupState.class);
+                membershipUpdateTimes.put(peerOp.getUri(), rsp.membershipUpdateTimeMicros);
+                uniqueTimes.add(rsp.membershipUpdateTimeMicros);
+            }
+
+            if (uniqueTimes.size() > 1) {
+                String error = String.format("Membership times not converged: %s",
+                        membershipUpdateTimes);
+                parentOp.fail(new IllegalStateException(error));
+                return;
             }
 
             parentOp.complete();
@@ -143,12 +182,9 @@ public class NodeGroupUtils {
             if (NodeState.isUnAvailable(ns)) {
                 continue;
             }
-            CheckConvergenceRequest peerReq = CheckConvergenceRequest
-                    .create(ngs.membershipUpdateTimeMicros);
-            Operation peerOp = Operation.createPost(ns.groupReference)
+            Operation peerOp = Operation.createGet(ns.groupReference)
                     .transferRefererFrom(parentOp)
-                    .setExpiration(parentOp.getExpirationMicrosUtc())
-                    .setBodyNoCloning(peerReq);
+                    .setExpiration(parentOp.getExpirationMicrosUtc());
             ops.add(peerOp);
         }
 

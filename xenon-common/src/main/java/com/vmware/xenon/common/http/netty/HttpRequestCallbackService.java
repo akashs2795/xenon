@@ -51,6 +51,18 @@ public class HttpRequestCallbackService extends StatelessService {
     }
 
     @Override
+    public void authorizeRequest(Operation o) {
+        if (o.getAction() != Action.PATCH) {
+            super.authorizeRequest(o);
+            return;
+        }
+
+        // the operation will fail if the id being patched is wrong.
+        o.complete();
+        return;
+    }
+
+    @Override
     public void handleRequest(Operation o) {
         if (o.getAction() == Action.DELETE) {
             super.handleRequest(o);
@@ -81,7 +93,7 @@ public class HttpRequestCallbackService extends StatelessService {
             }
 
             this.client.stopTracking(request);
-            request.setBodyNoCloning(o.getBodyRaw());
+
             String responseStatusValue = o.getRequestHeaders().remove(
                     Operation.RESPONSE_CALLBACK_STATUS_HEADER);
 
@@ -90,6 +102,8 @@ public class HttpRequestCallbackService extends StatelessService {
                         "Missing response callback status header :" + o.toString()));
                 return;
             }
+
+            request.setBodyNoCloning(o.getBodyRaw());
 
             request.transferRequestHeadersToResponseHeadersFrom(o);
             request.setStatusCode(Integer.parseInt(responseStatusValue));

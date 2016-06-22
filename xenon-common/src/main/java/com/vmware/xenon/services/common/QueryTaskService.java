@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -40,11 +41,11 @@ import com.vmware.xenon.services.common.QueryTask.QuerySpecification;
 import com.vmware.xenon.services.common.QueryTask.QuerySpecification.QueryOption;
 import com.vmware.xenon.services.common.QueryTask.QueryTerm.MatchType;
 
-public class LuceneQueryTaskService extends StatefulService {
+public class QueryTaskService extends StatefulService {
     private static final long DEFAULT_EXPIRATION_SECONDS = 600;
     private ServiceDocumentQueryResult results;
 
-    public LuceneQueryTaskService() {
+    public QueryTaskService() {
         super(QueryTask.class);
         super.toggleOption(ServiceOption.REPLICATION, true);
         super.toggleOption(ServiceOption.OWNER_SELECTION, true);
@@ -89,32 +90,63 @@ public class LuceneQueryTaskService extends StatefulService {
             if (initState.querySpec.options.contains(QueryOption.BROADCAST)) {
                 createAndSendBroadcastQuery(initState, startPost);
             } else {
-                convertAndForwardToLucene(initState, startPost);
+                forwardQueryToDocumentIndexService(initState, startPost);
             }
         }
     }
 
     private boolean validateState(QueryTask initState, Operation startPost) {
         if (initState.querySpec == null) {
-            startPost.fail(new IllegalArgumentException("specification is required"));
+            startPost.fail(new IllegalArgumentException("querySpec is required"));
             return false;
         }
 
         if (initState.querySpec.query == null) {
-            startPost.fail(new IllegalArgumentException("specification.query is required"));
+            startPost.fail(new IllegalArgumentException("querySpec.query is required"));
             return false;
         }
 
+        if (initState.querySpec.options == null || initState.querySpec.options.isEmpty()) {
+            return true;
+        }
+
+        if (initState.querySpec.options.contains(QueryOption.EXPAND_LINKS)) {
+            if (!initState.querySpec.options.contains(QueryOption.SELECT_LINKS)) {
+                startPost.fail(new IllegalArgumentException(
+                        "Must be combined with " + QueryOption.SELECT_LINKS));
+                return false;
+            }
+            // additional option combination validation will be done in the SELECT_LINKS
+            // block, since that option must be combined with this one
+        }
+
+        if (initState.querySpec.options.contains(QueryOption.SELECT_LINKS)) {
+            final String errFmt = QueryOption.SELECT_LINKS + " is not compatible with %s";
+            if (initState.querySpec.options.contains(QueryOption.COUNT)) {
+                startPost.fail(new IllegalArgumentException(
+                        String.format(errFmt, QueryOption.COUNT)));
+                return false;
+            }
+            if (initState.querySpec.options.contains(QueryOption.CONTINUOUS)) {
+                startPost.fail(new IllegalArgumentException(
+                        String.format(errFmt, QueryOption.CONTINUOUS)));
+                return false;
+            }
+            if (initState.querySpec.linkTerms == null || initState.querySpec.linkTerms.isEmpty()) {
+                startPost.fail(new IllegalArgumentException(
+                        "querySpec.linkTerms must have at least one entry"));
+                return false;
+            }
+        }
+
         if (initState.taskInfo.isDirect
-                && initState.querySpec.options != null
                 && initState.querySpec.options.contains(QueryOption.CONTINUOUS)) {
             startPost.fail(new IllegalArgumentException("direct query task is not compatible with "
                     + QueryOption.CONTINUOUS));
             return false;
         }
 
-        if (initState.querySpec.options != null
-                && initState.querySpec.options.contains(QueryOption.BROADCAST)
+        if (initState.querySpec.options.contains(QueryOption.BROADCAST)
                 && initState.querySpec.options.contains(QueryOption.SORT)
                 && initState.querySpec.sortTerm != null
                 && !Objects.equals(initState.querySpec.sortTerm.propertyName, ServiceDocument.FIELD_NAME_SELF_LINK)) {
@@ -203,7 +235,7 @@ public class LuceneQueryTaskService extends StatefulService {
             boolean isAscOrder = queryTask.querySpec.sortOrder == null
                     || queryTask.querySpec.sortOrder == QuerySpecification.SortOrder.ASC;
 
-            queryTask.results = Utils.mergeQueryResults(queryResults, isAscOrder,
+            queryTask.results = QueryTaskUtils.mergeQueryResults(queryResults, isAscOrder,
                     queryTask.querySpec.options);
         } else {
             URI broadcastPageServiceUri = UriUtils.buildUri(this.getHost(), UriUtils.buildUriPath(ServiceUriPaths.CORE,
@@ -276,6 +308,15 @@ public class LuceneQueryTaskService extends StatefulService {
         if (r.documents != null) {
             currentState.results.documents = new HashMap<>(r.documents);
         }
+        if (r.selectedLinksPerDocument != null) {
+            currentState.results.selectedLinksPerDocument = new HashMap<>(r.selectedLinksPerDocument);
+        }
+        if (r.selectedLinks != null) {
+            currentState.results.selectedLinks = new HashSet<>(r.selectedLinks);
+        }
+        if (r.selectedDocuments != null) {
+            currentState.results.selectedDocuments = new HashMap<>(r.selectedDocuments);
+        }
 
         get.setBodyNoCloning(currentState).complete();
     }
@@ -341,7 +382,7 @@ public class LuceneQueryTaskService extends StatefulService {
             if (patchBody.querySpec.options.contains(QueryOption.BROADCAST)) {
                 createAndSendBroadcastQuery(patchBody, null);
             } else {
-                convertAndForwardToLucene(state, null);
+                forwardQueryToDocumentIndexService(state, null);
             }
         }
     }
@@ -379,21 +420,8 @@ public class LuceneQueryTaskService extends StatefulService {
         return true;
     }
 
-    private void convertAndForwardToLucene(QueryTask task, Operation directOp) {
+    private void forwardQueryToDocumentIndexService(QueryTask task, Operation directOp) {
         try {
-            org.apache.lucene.search.Query q =
-                    LuceneQueryConverter.convertToLuceneQuery(task.querySpec.query);
-
-            task.querySpec.context.nativeQuery = q;
-
-            org.apache.lucene.search.Sort sort = null;
-            if (task.querySpec.options != null
-                    && task.querySpec.options.contains(QuerySpecification.QueryOption.SORT)) {
-                sort = LuceneQueryConverter.convertToLuceneSort(task.querySpec);
-            }
-
-            task.querySpec.context.nativeSort = sort;
-
             if (task.querySpec.resultLimit == null) {
                 task.querySpec.resultLimit = Integer.MAX_VALUE;
             }
@@ -482,7 +510,7 @@ public class LuceneQueryTaskService extends StatefulService {
         }
 
         getHost().schedule(() -> {
-            convertAndForwardToLucene(task, directOp);
+            forwardQueryToDocumentIndexService(task, directOp);
         }, getMaintenanceIntervalMicros(), TimeUnit.MICROSECONDS);
 
         return true;
@@ -519,13 +547,35 @@ public class LuceneQueryTaskService extends StatefulService {
                 task.documentOwner = getHost().getId();
             }
 
+            scheduleExpiration = !task.querySpec.options.contains(QueryOption.EXPAND_LINKS);
             if (directOp != null) {
-                directOp.setBodyNoCloning(task).complete();
+                if (!task.querySpec.options.contains(QueryOption.EXPAND_LINKS)) {
+                    directOp.setBodyNoCloning(task).complete();
+                    return;
+                }
+                directOp.nestCompletion((o, ex) -> {
+                    directOp.setStatusCode(o.getStatusCode())
+                            .setBodyNoCloning(o.getBodyRaw()).complete();
+                    scheduleTaskExpiration(task);
+                });
+                QueryTaskUtils.expandLinks(getHost(), task, directOp);
             } else {
-                // PATCH self to finished
-                // we do not clone our state since we already cloned before the query
-                // started
-                sendRequest(Operation.createPatch(getUri()).setBodyNoCloning(task));
+                if (!task.querySpec.options.contains(QueryOption.EXPAND_LINKS)) {
+                    sendRequest(Operation.createPatch(getUri()).setBodyNoCloning(task));
+                    return;
+                }
+
+                CompletionHandler c = (o, ex) -> {
+                    scheduleTaskExpiration(task);
+                    if (ex != null) {
+                        failTask(ex, null, null);
+                        return;
+                    }
+                    sendRequest(Operation.createPatch(getUri()).setBodyNoCloning(task));
+                };
+                Operation dummyOp = Operation.createGet(getHost().getUri()).setCompletion(c)
+                        .setReferer(getUri());
+                QueryTaskUtils.expandLinks(getHost(), task, dummyOp);
             }
         } finally {
             if (scheduleExpiration) {

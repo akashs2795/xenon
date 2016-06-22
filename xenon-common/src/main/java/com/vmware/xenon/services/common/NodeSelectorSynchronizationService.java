@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.Operation.CompletionHandler;
+import com.vmware.xenon.common.Operation.OperationOption;
 import com.vmware.xenon.common.Service;
 import com.vmware.xenon.common.ServiceDocument;
 import com.vmware.xenon.common.ServiceDocument.DocumentRelationship;
@@ -412,7 +413,7 @@ public class NodeSelectorSynchronizationService extends StatelessService {
                 .transferRefererFrom(post).setExpiration(post.getExpirationMicrosUtc())
                 .setCompletion(c);
 
-        peerOp.setConnectionSharing(true);
+        peerOp.toggleOption(OperationOption.CONNECTION_SHARING, true);
 
         // Mark it as replicated so the remote factories do not try to replicate it again
         peerOp.addPragmaDirective(Operation.PRAGMA_DIRECTIVE_REPLICATED);

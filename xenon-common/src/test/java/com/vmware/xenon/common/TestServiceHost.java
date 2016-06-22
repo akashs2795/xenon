@@ -43,6 +43,7 @@ import java.util.function.Consumer;
 
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.junit.After;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -142,7 +143,7 @@ public class TestServiceHost {
         String userPath = AuthorizationHelper.createUserService(this.host, this.host, "someone@example.org");
         this.host.resetAuthorizationContext();
 
-        this.host.assumeIdentity(userPath, null);
+        this.host.assumeIdentity(userPath);
 
         // set limit for this user to 1 request / second
         this.host.setRequestRateLimit(userPath, 1.0);
@@ -358,7 +359,7 @@ public class TestServiceHost {
         }
 
         try {
-            h.cacheAuthorizationContext(s, UUID.randomUUID().toString(),
+            h.cacheAuthorizationContext(s,
                     this.host.getGuestAuthorizationContext());
             throw new IllegalStateException("call should have failed");
         } catch (IllegalStateException e) {
@@ -841,6 +842,7 @@ public class TestServiceHost {
 
         long cacheMissCount = 0;
         long cacheClearCount = 0;
+        ServiceStat cacheClearStat = null;
         Map<URI, ServiceStats> servicesWithMaintenance = new HashMap<>();
 
         // guarantee at least a few intervals have passed. Other we risk false negatives.
@@ -904,9 +906,21 @@ public class TestServiceHost {
                 continue;
             }
 
+            Map<String, ServiceStat> mgmtStats = getManagementServiceStats();
+            cacheClearStat = mgmtStats.get(Service.STAT_NAME_SERVICE_CACHE_CLEAR_COUNT);
+            if (cacheClearStat == null || cacheClearStat.latestValue < 1) {
+                this.host.log("Cache clear stat on management service not seen");
+                Thread.sleep(maintIntervalMillis * 2);
+                continue;
+            }
             break;
         }
         long end = Utils.getNowMicrosUtc();
+
+        if (cacheClearStat == null || cacheClearStat.latestValue < 1) {
+            throw new IllegalStateException(
+                    "Cache clear stat on management service not observed");
+        }
 
         this.host.log("State cache misses: %d, cache clears: %d", cacheMissCount, cacheClearCount);
 
@@ -1294,10 +1308,12 @@ public class TestServiceHost {
         // set memory limit low to force service pause
         this.host.setServiceMemoryLimit(ServiceHost.ROOT_PATH, 0.00001);
         beforeHostStart(this.host);
+
         this.host.setPort(0);
         long delayMicros = TimeUnit.SECONDS
                 .toMicros(this.serviceCacheClearDelaySeconds);
         this.host.setServiceCacheClearDelayMicros(delayMicros);
+
         // disable auto sync since it might cause a false negative (skipped pauses) when
         // it kicks in within a few milliseconds from host start, during induced pause
         this.host.setPeerSynchronizationEnabled(false);
@@ -1385,18 +1401,26 @@ public class TestServiceHost {
         this.host.testWait();
 
         if (this.testDurationSeconds == 0) {
-            for (ServiceStats statsPerInstance : stats.values()) {
-                ServiceStat pauseStat = statsPerInstance.entries.get(Service.STAT_NAME_PAUSE_COUNT);
-                ServiceStat resumeStat = statsPerInstance.entries
-                        .get(Service.STAT_NAME_RESUME_COUNT);
-                if (pauseStat == null) {
-                    throw new IllegalStateException("No pauses observed");
+            this.host.waitFor("Service stats did not get updated", () -> {
+                for (ServiceStats statsPerInstance : stats.values()) {
+                    ServiceStat pauseStat = statsPerInstance.entries.get(Service.STAT_NAME_PAUSE_COUNT);
+                    ServiceStat resumeStat = statsPerInstance.entries.get(Service.STAT_NAME_RESUME_COUNT);
+                    if (pauseStat == null || resumeStat == null) {
+                        return false;
+                    }
                 }
-                if (resumeStat == null) {
-                    throw new IllegalStateException("No resumes observed");
+
+                Map<String, ServiceStat> mgmtStats = getManagementServiceStats();
+                ServiceStat mgmtPauseStat = mgmtStats.get(Service.STAT_NAME_SERVICE_PAUSE_COUNT);
+                ServiceStat mgmtResumeStat = mgmtStats.get(Service.STAT_NAME_SERVICE_RESUME_COUNT);
+                if (mgmtPauseStat == null || mgmtResumeStat == null ||
+                        (int)mgmtPauseStat.latestValue < states.size() ||
+                        (int)mgmtPauseStat.latestValue < states.size()) {
+                    return false;
                 }
-            }
-            return;
+
+                return true;
+            });
         }
 
         states.clear();
@@ -1462,6 +1486,72 @@ public class TestServiceHost {
         }
     }
 
+    @Ignore("https://www.pivotaltracker.com/story/show/121861443")
+    @Test
+    public void maintenanceForOnDemandLoadServices() throws Throwable {
+        setUp(true);
+
+        long maintenanceIntervalMillis = 100;
+        long maintenanceIntervalMicros = TimeUnit.MILLISECONDS
+                .toMicros(maintenanceIntervalMillis);
+
+        // induce host to clear service state cache by setting mem limit low
+        this.host.setMaintenanceIntervalMicros(maintenanceIntervalMicros);
+        this.host.setServiceCacheClearDelayMicros(maintenanceIntervalMicros / 2);
+        this.host.start();
+
+        // Start some test services with ServiceOption.ON_DEMAND_LOAD
+        EnumSet<ServiceOption> caps = EnumSet.of(ServiceOption.PERSISTENCE,
+                ServiceOption.INSTRUMENTATION, ServiceOption.ON_DEMAND_LOAD, ServiceOption.FACTORY_ITEM);
+        List<Service> services = this.host.doThroughputServiceStart(this.serviceCount,
+                MinimalTestService.class, this.host.buildMinimalTestState(), caps, null);
+
+        // Also, start the factory service. it will need it to start services on-demand
+        MinimalFactoryTestService factoryService = new MinimalFactoryTestService();
+        factoryService.setChildServiceCaps(caps);
+        this.host.startServiceAndWait(factoryService, "service", null);
+
+        // guarantee at least a few intervals have passed.
+        Thread.sleep(maintenanceIntervalMillis * 10);
+
+        // Let's verify now that all of the services have stopped by now.
+        int stoppedCount = 0;
+        Date exp = this.host.getTestExpiration();
+        while (new Date().before(exp)) {
+            stoppedCount = 0;
+            for (Service svc : services) {
+                MinimalTestService service = (MinimalTestService) svc;
+                if (service.gotStopped) {
+                    stoppedCount++;
+                }
+            }
+            if (stoppedCount < this.serviceCount) {
+                Thread.sleep(maintenanceIntervalMillis / 2);
+                continue;
+            }
+
+            Map<String, ServiceStat> stats = getManagementServiceStats();
+            ServiceStat odlStops = stats.get(Service.STAT_NAME_ODL_STOP_COUNT);
+            ServiceStat odlCacheClears = stats.get(Service.STAT_NAME_ODL_CACHE_CLEAR_COUNT);
+            ServiceStat cacheClears = stats.get(Service.STAT_NAME_SERVICE_CACHE_CLEAR_COUNT);
+            if (odlStops == null || odlStops.latestValue != this.serviceCount) {
+                Thread.sleep(maintenanceIntervalMillis / 2);
+                continue;
+            }
+            if (odlCacheClears == null || odlStops.latestValue != this.serviceCount) {
+                Thread.sleep(maintenanceIntervalMillis / 2);
+                continue;
+            }
+            if (cacheClears == null || cacheClears.latestValue != this.serviceCount) {
+                Thread.sleep(maintenanceIntervalMillis / 2);
+                continue;
+            }
+            return;
+        }
+
+        throw new TimeoutException();
+    }
+
     private void patchExampleServices(Map<URI, ExampleServiceState> states, int count)
             throws Throwable {
         this.host.testStart(states.size() * count);
@@ -1476,6 +1566,25 @@ public class TestServiceHost {
             }
         }
         this.host.testWait();
+    }
+
+    private Map<String, ServiceStat> getManagementServiceStats() throws Throwable {
+        Map<String, ServiceStat> stats = Collections.synchronizedMap(new HashMap<>());
+        this.host.testStart(1);
+        Operation getManagementStats = Operation.createGet(
+                UriUtils.buildStatsUri(this.host.getManagementServiceUri()))
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        this.host.failIteration(e);
+                        return;
+                    }
+                    ServiceStats response = o.getBody(ServiceStats.class);
+                    stats.putAll(response.entries);
+                    this.host.completeIteration();
+                });
+        this.host.send(getManagementStats);
+        this.host.testWait();
+        return stats;
     }
 
     @Test

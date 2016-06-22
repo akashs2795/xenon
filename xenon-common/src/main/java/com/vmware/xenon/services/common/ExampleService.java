@@ -14,8 +14,10 @@
 package com.vmware.xenon.services.common;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 
 import com.vmware.xenon.common.FactoryService;
 import com.vmware.xenon.common.Operation;
@@ -46,15 +48,27 @@ public class ExampleService extends StatefulService {
         public static final String FIELD_NAME_COUNTER = "counter";
         public static final String FIELD_NAME_SORTED_COUNTER = "sortedCounter";
         public static final String FIELD_NAME_NAME = "name";
+        public static final String FIELD_NAME_TAGS = "tags";
+        public static final String FIELD_NAME_ID = "id";
+        public static final String FIELD_NAME_REQUIRED = "required";
         public static final long VERSION_RETENTION_LIMIT = 100;
 
         @UsageOption(option = PropertyUsageOption.OPTIONAL)
+        @PropertyOptions(indexing = { PropertyIndexingOption.EXPAND,
+                PropertyIndexingOption.FIXED_ITEM_NAME })
         public Map<String, String> keyValues = new HashMap<>();
         public Long counter;
         @PropertyOptions(indexing = PropertyIndexingOption.SORT)
         public Long sortedCounter;
         @UsageOption(option = PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
         public String name;
+        @UsageOption(option = PropertyUsageOption.AUTO_MERGE_IF_NOT_NULL)
+        public Set<String> tags = new HashSet<>();
+        @UsageOption(option = PropertyUsageOption.ID)
+        @UsageOption(option = PropertyUsageOption.REQUIRED)
+        public String id;
+        @UsageOption(option = PropertyUsageOption.REQUIRED)
+        public String required;
     }
 
     public ExampleService() {
@@ -186,6 +200,12 @@ public class ExampleService extends StatefulService {
 
         // instruct the index to deeply index the map
         pd.indexingOptions.add(PropertyIndexingOption.EXPAND);
+
+        PropertyDescription pdTags = template.documentDescription.propertyDescriptions.get(
+                ExampleServiceState.FIELD_NAME_TAGS);
+
+        // instruct the index to deeply index the set of tags
+        pdTags.indexingOptions.add(PropertyIndexingOption.EXPAND);
 
         PropertyDescription pdName = template.documentDescription.propertyDescriptions.get(
                 ExampleServiceState.FIELD_NAME_NAME);

@@ -41,6 +41,7 @@ import java.util.Map.Entry;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -49,21 +50,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
 import javax.net.ssl.SSLContext;
+import javax.xml.bind.DatatypeConverter;
 
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-
 import org.apache.lucene.store.LockObtainFailedException;
 import org.junit.rules.TemporaryFolder;
 
 import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.CommandLineArgumentParser;
+import com.vmware.xenon.common.NodeSelectorState;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.Operation.AuthorizationContext;
 import com.vmware.xenon.common.Operation.CompletionHandler;
-import com.vmware.xenon.common.Operation.SocketContext;
+import com.vmware.xenon.common.Operation.OperationOption;
 import com.vmware.xenon.common.Service;
 import com.vmware.xenon.common.Service.Action;
 import com.vmware.xenon.common.Service.ServiceOption;
@@ -109,7 +110,6 @@ import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.TaskService;
 
 public class VerificationHost extends ExampleServiceHost {
-
 
     public static final int FAST_MAINT_INTERVAL_MILLIS = 100;
 
@@ -191,8 +191,8 @@ public class VerificationHost extends ExampleServiceHost {
             String line;
             String cmd = String.format("ps -o ppid,pid,ucomm %s", filter);
             Process p = Runtime.getRuntime().exec(cmd);
-            BufferedReader input =
-                    new BufferedReader(new InputStreamReader(p.getInputStream(), Utils.CHARSET));
+            BufferedReader input = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), Utils.CHARSET));
             input.readLine(); // skip header
             while ((line = input.readLine()) != null) {
                 String[] columns = line.trim().split("\\s+", 3);
@@ -409,10 +409,11 @@ public class VerificationHost extends ExampleServiceHost {
             throw new IllegalStateException("Use startTest on singleton, shared host instances");
         }
         if (this.context != null) {
-            throw new IllegalStateException("An test is already started");
+            throw new IllegalStateException("A test is already started");
         }
 
-        String negative = properties != null && properties.contains(TestProperty.FORCE_FAILURE) ? "(NEGATIVE)"
+        String negative = properties != null && properties.contains(TestProperty.FORCE_FAILURE)
+                ? "(NEGATIVE)"
                 : "";
         if (c > 1) {
             log("%sTest %s, iterations %d, started", negative, testName, c);
@@ -557,15 +558,35 @@ public class VerificationHost extends ExampleServiceHost {
     }
 
     public ServiceDocument buildMinimalTestState() {
+        return buildMinimalTestState(20);
+    }
+
+    public MinimalTestServiceState buildMinimalTestState(int bytes) {
         MinimalTestServiceState minState = new MinimalTestServiceState();
         minState.id = Utils.getNowMicrosUtc() + "";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 25; i++) {
-            sb.append(Utils.getNowMicrosUtc());
-        }
-        minState.stringValue = sb.toString();
-
+        byte[] body = new byte[bytes];
+        new Random().nextBytes(body);
+        minState.stringValue = DatatypeConverter.printBase64Binary(body);
         return minState;
+    }
+
+    public CompletableFuture<Operation> sendWithFuture(Operation op) {
+        if (op.getCompletion() != null) {
+            throw new IllegalStateException("completion handler must not be set");
+        }
+
+        CompletableFuture<Operation> res = new CompletableFuture<>();
+        op.setCompletion((o, e) -> {
+            if (e != null) {
+                res.completeExceptionally(e);
+            } else {
+                res.complete(o);
+            }
+        });
+
+        this.send(op);
+
+        return res;
     }
 
     /**
@@ -658,6 +679,7 @@ public class VerificationHost extends ExampleServiceHost {
         TestContext ctx = testCreate(1);
         create.documentSelfLink = UUID.randomUUID().toString();
         create.documentSourceLink = sourceLink;
+        create.taskInfo.isDirect = isDirect;
         Operation startPost = Operation.createPost(factoryUri).setBody(create)
                 .setCompletion(ctx.getCompletion());
 
@@ -761,7 +783,8 @@ public class VerificationHost extends ExampleServiceHost {
                 documentCount, expectedResultCount);
     }
 
-    public ServiceDocumentQueryResult createAndWaitSimpleDirectQuery(QueryTask.QuerySpecification spec,
+    public ServiceDocumentQueryResult createAndWaitSimpleDirectQuery(
+            QueryTask.QuerySpecification spec,
             long documentCount, long expectedResultCount)
             throws Throwable {
         return createAndWaitSimpleDirectQuery(this.getUri(), spec,
@@ -1001,6 +1024,146 @@ public class VerificationHost extends ExampleServiceHost {
         return this.getServiceState(null, ServiceDocumentQueryResult.class, factoryUri);
     }
 
+    public void doExampleServiceUpdateAndQueryByVersion(URI hostUri, int serviceCount)
+            throws Throwable {
+        Consumer<Operation> bodySetter = (o) -> {
+            ExampleServiceState s = new ExampleServiceState();
+            s.name = UUID.randomUUID().toString();
+            o.setBody(s);
+        };
+        Map<URI, ExampleServiceState> services = doFactoryChildServiceStart(null,
+                serviceCount,
+                ExampleServiceState.class, bodySetter,
+                UriUtils.buildUri(hostUri, ExampleService.FACTORY_LINK));
+
+        Map<URI, ExampleServiceState> statesBeforeUpdate = getServiceState(null,
+                ExampleServiceState.class, services.keySet());
+
+        for (ExampleServiceState state : statesBeforeUpdate.values()) {
+            assertEquals(state.documentVersion, 0);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.POST, 0L,
+                    0L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.POST, null,
+                    0L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.POST, 1L,
+                    null);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.POST, 10L,
+                    null);
+        }
+
+        ExampleServiceState body = new ExampleServiceState();
+        body.name = UUID.randomUUID().toString();
+        doServiceUpdates(services.keySet(), Action.PUT, body);
+        Map<URI, ExampleServiceState> statesAfterPut = getServiceState(null,
+                ExampleServiceState.class, services.keySet());
+
+        for (ExampleServiceState state : statesAfterPut.values()) {
+            assertEquals(state.documentVersion, 1);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.POST, 0L,
+                    0L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.PUT, 1L,
+                    1L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.PUT, null,
+                    1L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.PUT, 10L,
+                    null);
+        }
+
+        doServiceUpdates(services.keySet(), Action.DELETE, body);
+
+        for (ExampleServiceState state : statesAfterPut.values()) {
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.POST, 0L,
+                    0L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.PUT, 1L,
+                    1L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.DELETE, 2L,
+                    2L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.DELETE,
+                    null, 2L);
+            queryDocumentIndexByVersionAndVerify(hostUri, state.documentSelfLink, Action.DELETE,
+                    10L, null);
+        }
+    }
+
+    private void doServiceUpdates(Collection<URI> serviceUris, Action action, ServiceDocument body)
+            throws Throwable {
+        TestContext ctx = testCreate(serviceUris.size());
+        for (URI u : serviceUris) {
+            Operation update = Operation.createPost(u)
+                    .setAction(action)
+                    .setBody(body)
+                    .setCompletion(ctx.getCompletion());
+            send(update);
+        }
+        testWait(ctx);
+    }
+
+    private void queryDocumentIndexByVersionAndVerify(URI hostUri, String selfLink,
+            Action expectedAction,
+            Long version,
+            Long latestVersion)
+            throws Throwable {
+
+        URI localQueryUri = UriUtils.buildDefaultDocumentQueryUri(
+                hostUri,
+                selfLink,
+                false,
+                true,
+                ServiceOption.PERSISTENCE);
+
+        if (version != null) {
+            localQueryUri = UriUtils.appendQueryParam(localQueryUri,
+                    ServiceDocument.FIELD_NAME_VERSION,
+                    Long.toString(version));
+        }
+
+        TestContext ctx = testCreate(1);
+        Operation remoteGet = Operation
+                .createGet(localQueryUri)
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        ctx.failIteration(
+                                new IllegalStateException("Could not query document-index"));
+                        return;
+                    }
+
+                    if (latestVersion == null) {
+                        if (o.hasBody()) {
+                            ctx.failIteration(new IllegalStateException(
+                                    "Document not expected"));
+                            return;
+                        }
+                        ctx.completeIteration();
+                        return;
+                    }
+
+                    ServiceDocument result = o.getBody(ServiceDocument.class);
+                    Long expectedVersion = version;
+
+                    if (version == null) {
+                        expectedVersion = latestVersion;
+                    }
+
+                    if (result.documentVersion != expectedVersion.intValue()) {
+                        ctx.failIteration(new IllegalStateException(
+                                "Invalid document version returned"));
+                        return;
+                    }
+
+                    if (!expectedAction.name().equals(result.documentUpdateAction)) {
+                        ctx.failIteration(new IllegalStateException(
+                                "Invalid document update action returned:"
+                                        + result.documentUpdateAction));
+                        return;
+                    }
+
+                    ctx.completeIteration();
+                });
+
+        send(remoteGet);
+        testWait(ctx);
+    }
+
     public <T> void doPutPerService(List<Service> services)
             throws Throwable {
         doPutPerService(EnumSet.noneOf(TestProperty.class), services);
@@ -1079,10 +1242,10 @@ public class VerificationHost extends ExampleServiceHost {
         final int maxByteCount = 256 * 1024;
         if (properties.contains(TestProperty.LARGE_PAYLOAD)) {
             Random r = new Random();
-            int byteCount = SocketContext.getMaxRequestSize() / 4;
+            int byteCount = NettyHttpServiceClient.getRequestPayloadSizeLimit() / 4;
             if (properties.contains(TestProperty.BINARY_PAYLOAD)) {
                 if (properties.contains(TestProperty.FORCE_FAILURE)) {
-                    byteCount = SocketContext.getMaxRequestSize() * 2;
+                    byteCount = NettyHttpServiceClient.getRequestPayloadSizeLimit() * 2;
                 } else {
                     // make sure we do not blow memory if max request size is high
                     byteCount = Math.min(maxByteCount, byteCount);
@@ -1159,7 +1322,7 @@ public class VerificationHost extends ExampleServiceHost {
         int byteCount = Utils.toJson(body).getBytes(Utils.CHARSET).length;
         if (properties.contains(TestProperty.BINARY_SERIALIZATION)) {
             byte[] buffer = new byte[4096];
-            long c = Utils.toDocumentBytes((Object) body, buffer, 0);
+            long c = Utils.toDocumentBytes(body, buffer, 0);
             byteCount = (int) c;
         }
         log("Bytes per payload %s", byteCount);
@@ -1228,11 +1391,11 @@ public class VerificationHost extends ExampleServiceHost {
                         send(putClone);
                     });
                 } else if (properties.contains(TestProperty.CALLBACK_SEND)) {
-                    sendRequestWithCallback(updateOp.setBody(b));
+                    updateOp.toggleOption(OperationOption.SEND_WITH_CALLBACK, true);
+                    send(updateOp.setBody(b));
                 } else {
                     send(updateOp.setBody(b));
                 }
-
                 if (s.hasOption(ServiceOption.STRICT_UPDATE_CHECKING)) {
                     // we have to serialize requests and properly set version
                     if (!isFailureExpected) {
@@ -1317,13 +1480,20 @@ public class VerificationHost extends ExampleServiceHost {
         return this.referer;
     }
 
-    public void waitForServiceAvailable(String s) throws Throwable {
-        TestContext ctx = testCreate(1);
-        this.registerForServiceAvailability(ctx.getCompletion(), s);
-        ctx.await();
+    public void waitForServiceAvailable(String... links) throws Throwable {
+        for (String link: links) {
+            TestContext ctx = testCreate(1);
+            this.registerForServiceAvailability(ctx.getCompletion(), link);
+            ctx.await();
+        }
     }
 
     public void waitForReplicatedFactoryServiceAvailable(URI u) throws Throwable {
+        waitForReplicatedFactoryServiceAvailable(u, ServiceUriPaths.DEFAULT_NODE_SELECTOR);
+    }
+
+    public void waitForReplicatedFactoryServiceAvailable(URI u, String nodeSelectorPath)
+            throws Throwable {
         waitFor("replicated available check time out for " + u, () -> {
             boolean[] isReady = new boolean[1];
             TestContext ctx = testCreate(1);
@@ -1336,7 +1506,7 @@ public class VerificationHost extends ExampleServiceHost {
 
                 isReady[0] = true;
                 ctx.completeIteration();
-            }, this, u, ServiceUriPaths.DEFAULT_NODE_SELECTOR);
+            }, this, u, nodeSelectorPath);
             ctx.await();
             return isReady[0];
         });
@@ -1381,6 +1551,8 @@ public class VerificationHost extends ExampleServiceHost {
             props = EnumSet.noneOf(TestProperty.class);
         }
 
+        log("Sending %d POST requests to %s", c, factoryURI);
+
         TestContext ctx = testCreate((int) c);
         for (int i = 0; i < c; i++) {
             Operation createPost = Operation.createPost(factoryURI);
@@ -1413,14 +1585,14 @@ public class VerificationHost extends ExampleServiceHost {
         }
 
         ctx.await();
+        log("Done with %d POST requests to %s", c, factoryURI);
         return initialStates;
     }
 
     public List<Service> doThroughputServiceStart(long c, Class<? extends Service> type,
             ServiceDocument initialState,
             EnumSet<Service.ServiceOption> options,
-            EnumSet<Service.ServiceOption> optionsToRemove
-    ) throws Throwable {
+            EnumSet<Service.ServiceOption> optionsToRemove) throws Throwable {
         return doThroughputServiceStart(EnumSet.noneOf(TestProperty.class), c, type, initialState,
                 options, null);
     }
@@ -1500,6 +1672,7 @@ public class VerificationHost extends ExampleServiceHost {
                 .createPost(u)
                 .setBody(body)
                 .setCompletion(ctx.getCompletion());
+
         startService(post, s);
         ctx.await();
         return s;
@@ -1741,8 +1914,7 @@ public class VerificationHost extends ExampleServiceHost {
 
     public URI getPeerHostUri() {
         if (!this.peerNodeGroups.isEmpty()) {
-            List<URI> peerNodeGroupList =
-                    new ArrayList<URI>(this.peerNodeGroups.keySet());
+            List<URI> peerNodeGroupList = new ArrayList<URI>(this.peerNodeGroups.keySet());
             return getUriFromList(null, peerNodeGroupList);
         }
         return null;
@@ -1766,8 +1938,7 @@ public class VerificationHost extends ExampleServiceHost {
 
     public URI getPeerServiceUri(String link) {
         if (!this.localPeerHosts.isEmpty()) {
-            List<URI> localPeerList =
-                    new ArrayList<URI>(this.localPeerHosts.keySet());
+            List<URI> localPeerList = new ArrayList<URI>(this.localPeerHosts.keySet());
             return getUriFromList(link, localPeerList);
         } else {
             List<URI> peerList = new ArrayList<URI>(this.peerNodeGroups.keySet());
@@ -1875,7 +2046,7 @@ public class VerificationHost extends ExampleServiceHost {
                     }
 
                     testStart(1);
-                    joinNodeGroup(nodeGroup, initialNodeGroupService);
+                    joinNodeGroup(nodeGroup, initialNodeGroupService, memberCount);
                     testWait();
                 }
             }
@@ -2161,7 +2332,8 @@ public class VerificationHost extends ExampleServiceHost {
         getNodeState(nodeGroup, nodesPerHost, null);
     }
 
-    public void getNodeState(URI nodeGroup, Map<URI, NodeGroupState> nodesPerHost, TestContext ctx) {
+    public void getNodeState(URI nodeGroup, Map<URI, NodeGroupState> nodesPerHost,
+            TestContext ctx) {
         URI u = UriUtils.buildExpandLinksQueryUri(nodeGroup);
         Operation get = Operation.createGet(u).setCompletion((o, e) -> {
             NodeGroupState ngs = null;
@@ -2267,6 +2439,7 @@ public class VerificationHost extends ExampleServiceHost {
         for (URI nodeGroup : getNodeGroupMap().values()) {
             log("Changing quorum to %d on group %s", quorum, nodeGroup);
             setNodeGroupQuorum(quorum, nodeGroup);
+            // nodes might not be joined, so we need to ask each node to set quorum
         }
 
         Date exp = getTestExpiration();
@@ -2289,11 +2462,26 @@ public class VerificationHost extends ExampleServiceHost {
             }
             Thread.sleep(500);
         }
+        waitForNodeSelectorQuorumConvergence(ServiceUriPaths.DEFAULT_NODE_SELECTOR, quorum);
         resetAuthorizationContext();
 
         throw new TimeoutException();
     }
 
+    public void waitForNodeSelectorQuorumConvergence(String nodeSelectorPath, int quorum)
+            throws Throwable {
+        waitFor("quorum not updated", () -> {
+            for (URI peerHostUri : getNodeGroupMap().keySet()) {
+                URI nodeSelectorUri = UriUtils.buildUri(peerHostUri, nodeSelectorPath);
+                NodeSelectorState nss = getServiceState(null, NodeSelectorState.class,
+                        nodeSelectorUri);
+                if (nss.membershipQuorum != quorum) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
 
     public void setNodeGroupQuorum(Integer quorum, URI nodeGroup)
             throws Throwable {
@@ -2454,7 +2642,8 @@ public class VerificationHost extends ExampleServiceHost {
         Map<URI, LogServiceState> states = this.getServiceState(null, LogServiceState.class,
                 logServices);
         for (Entry<URI, LogServiceState> entry : states.entrySet()) {
-            log("Process log for node %s\n\n%s", entry.getKey(), Utils.toJsonHtml(entry.getValue()));
+            log("Process log for node %s\n\n%s", entry.getKey(),
+                    Utils.toJsonHtml(entry.getValue()));
         }
     }
 
@@ -2529,7 +2718,8 @@ public class VerificationHost extends ExampleServiceHost {
 
         double total = st.accumulatedValue != 0 ? st.accumulatedValue : st.latestValue;
         double avg = total / st.version;
-        sb.append(String.format("\t%08d\t\t%08.2f\t%010.2f\t%s%n", st.version, avg, total, st.name));
+        sb.append(
+                String.format("\t%08d\t\t%08.2f\t%010.2f\t%s%n", st.version, avg, total, st.name));
         if (hist == null) {
             return;
         }
@@ -2576,8 +2766,7 @@ public class VerificationHost extends ExampleServiceHost {
      * @param enable state to toggle to
      */
     public void toggleOperationTracing(URI baseHostURI, boolean enable) throws Throwable {
-        ServiceHostManagementService.ConfigureOperationTracingRequest r =
-                new ServiceHostManagementService.ConfigureOperationTracingRequest();
+        ServiceHostManagementService.ConfigureOperationTracingRequest r = new ServiceHostManagementService.ConfigureOperationTracingRequest();
         r.enable = enable ? ServiceHostManagementService.OperationTracingEnable.START
                 : ServiceHostManagementService.OperationTracingEnable.STOP;
         r.kind = ServiceHostManagementService.ConfigureOperationTracingRequest.KIND;
@@ -2585,7 +2774,8 @@ public class VerificationHost extends ExampleServiceHost {
         this.setSystemAuthorizationContext();
         TestContext ctx = testCreate(1);
         this.send(Operation
-                .createPatch(UriUtils.extendUri(baseHostURI, ServiceHostManagementService.SELF_LINK))
+                .createPatch(
+                        UriUtils.extendUri(baseHostURI, ServiceHostManagementService.SELF_LINK))
                 .setBody(r)
                 .setCompletion(ctx.getCompletion()));
         testWait(ctx);
@@ -2756,10 +2946,20 @@ public class VerificationHost extends ExampleServiceHost {
      * Inject user identity into operation context.
      *
      * @param userServicePath user document link
+     */
+    public AuthorizationContext assumeIdentity(String userServicePath) throws GeneralSecurityException {
+        return assumeIdentity(userServicePath, null);
+    }
+
+    /**
+     * Inject user identity into operation context.
+     *
+     * @param userServicePath user document link
      * @param properties custom properties in claims
      * @throws GeneralSecurityException any generic security exception
      */
-    public void assumeIdentity(String userServicePath, Map<String, String> properties) throws GeneralSecurityException {
+    public AuthorizationContext assumeIdentity(String userServicePath,
+            Map<String, String> properties) throws GeneralSecurityException {
         Claims.Builder builder = new Claims.Builder();
         builder.setSubject(userServicePath);
         builder.setProperties(properties);
@@ -2771,7 +2971,9 @@ public class VerificationHost extends ExampleServiceHost {
         ab.setToken(token);
 
         // Associate resulting authorization context with this thread
-        setAuthorizationContext(ab.getResult());
+        AuthorizationContext authContext = ab.getResult();
+        setAuthorizationContext(authContext);
+        return authContext;
     }
 
     public void deleteAllChildServices(URI factoryURI) throws Throwable {
@@ -2788,9 +2990,9 @@ public class VerificationHost extends ExampleServiceHost {
     }
 
     public <T extends ServiceDocument> ServiceDocument verifyPost(Class<T> documentType,
-                                                                  String factoryLink,
-                                                                  T state,
-                                                                  int expectedStatusCode) throws Throwable {
+            String factoryLink,
+            T state,
+            int expectedStatusCode) throws Throwable {
         final ServiceDocument[] outState = new ServiceDocument[1];
         URI uri = UriUtils.buildUri(this, factoryLink);
 
@@ -2809,9 +3011,8 @@ public class VerificationHost extends ExampleServiceHost {
                     }
                     ctx.failIteration(new IllegalStateException(
                             String.format("Status code expected: %s, actual: %s",
-                                expectedStatusCode, o.getStatusCode())));
+                                    expectedStatusCode, o.getStatusCode())));
                 });
-
 
         send(op);
         testWait(ctx);
@@ -2855,6 +3056,21 @@ public class VerificationHost extends ExampleServiceHost {
         testStart(1);
         send(op);
         testWait();
+    }
+
+    /**
+     * Sends an operation, waits for completion and return the response representation.
+     */
+    public Operation waitForResponse(Operation op) throws Throwable {
+        final Operation[] result = new Operation[1];
+        op.nestCompletion((o, e) -> {
+            result[0] = o;
+            completeIteration();
+        });
+
+        sendAndWait(op);
+
+        return result[0];
     }
 
     /**
@@ -3004,7 +3220,8 @@ public class VerificationHost extends ExampleServiceHost {
      * @param <T>     the type that represent's the task's state
      * @return the state of the task once's it's {@code FINISHED}
      */
-    public <T extends TaskService.TaskServiceState> T waitForFinishedTask(Class<T> type, String taskUri)
+    public <T extends TaskService.TaskServiceState> T waitForFinishedTask(Class<T> type,
+            String taskUri)
             throws Throwable {
         return waitForTask(type, taskUri, TaskState.TaskStage.FINISHED);
     }
@@ -3018,7 +3235,8 @@ public class VerificationHost extends ExampleServiceHost {
      * @param <T>     the type that represent's the task's state
      * @return the state of the task once's it s {@code FAILED}
      */
-    public <T extends TaskService.TaskServiceState> T waitForFailedTask(Class<T> type, String taskUri)
+    public <T extends TaskService.TaskServiceState> T waitForFailedTask(Class<T> type,
+            String taskUri)
             throws Throwable {
         return waitForTask(type, taskUri, TaskState.TaskStage.FAILED);
     }
@@ -3093,6 +3311,8 @@ public class VerificationHost extends ExampleServiceHost {
                 host.start();
                 return true;
             } catch (Throwable e) {
+                Logger.getAnonymousLogger().warning(String
+                        .format("exception on host restart: %s", e.getMessage()));
                 try {
                     host.stop();
                 } catch (Throwable e1) {

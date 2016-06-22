@@ -19,22 +19,46 @@ public interface ServiceClient extends ServiceRequestSender {
     String SSL_PROTOCOL_NAME = "SSL";
     String TLS_PROTOCOL_NAME = "TLS";
 
+    public static final String PROPERTY_NAME_REQUEST_PAYLOAD_SIZE_LIMIT =
+            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.REQUEST_PAYLOAD_SIZE_LIMIT";
+
+    public static final String PROPERTY_NAME_MAX_BINARY_SERIALIZED_BODY_LIMIT =
+            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.MAX_BINARY_SERIALIZED_BODY_LIMIT";
+
+    public static final String PROPERTY_NAME_DEFAULT_CONNECTION_LIMIT_PER_HOST =
+            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.DEFAULT_CONNECTIONS_PER_HOST";
+
+    public static final String PROPERTY_NAME_DEFAULT_CONNECTION_LIMIT_PER_TAG =
+            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.DEFAULT_CONNECTION_LIMIT_PER_TAG";
+
     public static final int MAX_BINARY_SERIALIZED_BODY_LIMIT = Integer.getInteger(
-            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.MAX_BINARY_SERIALIZED_BODY_LIMIT",
-            1024 * 1024);
+            PROPERTY_NAME_MAX_BINARY_SERIALIZED_BODY_LIMIT, 1024 * 1024);
 
     public static final int DEFAULT_CONNECTION_LIMIT_PER_HOST = Integer.getInteger(
-            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.DEFAULT_CONNECTIONS_PER_HOST",
-            128);
+            PROPERTY_NAME_DEFAULT_CONNECTION_LIMIT_PER_HOST, 128);
 
     public static final int DEFAULT_CONNECTION_LIMIT_PER_TAG = Integer.getInteger(
-            Utils.PROPERTY_NAME_PREFIX + "ServiceClient.DEFAULT_CONNECTION_LIMIT_PER_TAG", 4);
+            PROPERTY_NAME_DEFAULT_CONNECTION_LIMIT_PER_TAG, 4);
+
+    public static final int REQUEST_PAYLOAD_SIZE_LIMIT = Integer.getInteger(
+            PROPERTY_NAME_REQUEST_PAYLOAD_SIZE_LIMIT, 1024 * 1024 * 64);
 
     /**
-     * Well known connection tag used by runtime for request related to replication and multiple
+     * Connection tag used by node group service for peer to peer random probing and liveness checks
+     */
+    public static final String CONNECTION_TAG_GOSSIP = "xn-cnx-tag-gossip";
+
+    /**
+     * Connection tag used by node selector services for request related to replication and multiple
      * node processes
      */
     public static final String CONNECTION_TAG_REPLICATION = "xn-cnx-tag-replication";
+
+    /**
+     * Connection tag used by service host for peer to peer forwarding during load
+     * balancing and node selection
+     */
+    public static final String CONNECTION_TAG_FORWARDING = "xn-cnx-tag-p2p-fwd";
 
     /**
      * Well known connection tag used when no explicit tag is specified. It will use the per
@@ -63,8 +87,6 @@ public interface ServiceClient extends ServiceRequestSender {
      * @param op
      */
     void send(Operation op);
-
-    void sendWithCallback(Operation op);
 
     /**
      * Maximum number of connections cached and re-used for a given host and port tuple. This

@@ -17,6 +17,7 @@ import java.net.URI;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
@@ -24,9 +25,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.vmware.xenon.common.NodeSelectorService.SelectOwnerResponse;
 import com.vmware.xenon.common.Operation.CompletionHandler;
+import com.vmware.xenon.common.Service.ServiceOption;
+import com.vmware.xenon.common.ServiceDocumentDescription.PropertyDescription;
+import com.vmware.xenon.common.UriUtils.ForwardingTarget;
 import com.vmware.xenon.services.common.NodeGroupService.NodeGroupState;
 import com.vmware.xenon.services.common.QueryTask;
 import com.vmware.xenon.services.common.QueryTask.QuerySpecification.QueryOption;
+import com.vmware.xenon.services.common.QueryTaskUtils;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 
 /**
@@ -80,7 +85,7 @@ public abstract class FactoryService extends StatelessService {
 
     /**
      * Creates a factory service instance that starts the specified child service
-     * on POST. The factory service has {@link ServiceOption.IDEMPOTENT_POST} enabled
+     * on POST. The factory service has {@link ServiceOption#IDEMPOTENT_POST} enabled
      */
     public static FactoryService createIdempotent(Class<? extends Service> childServiceType) {
         return create(childServiceType, ServiceOption.IDEMPOTENT_POST);
@@ -88,7 +93,7 @@ public abstract class FactoryService extends StatelessService {
 
     /**
      * Creates a factory service instance that starts the specified child service
-     * on POST. The factory service has {@link ServiceOption.IDEMPOTENT_POST} enabled
+     * on POST. The factory service has {@link ServiceOption#IDEMPOTENT_POST} enabled
      */
     public static FactoryService createIdempotent(Class<? extends Service> childServiceType,
             Class<? extends ServiceDocument> childServiceDocumentType) {
@@ -97,10 +102,11 @@ public abstract class FactoryService extends StatelessService {
 
     public static final Integer SELF_QUERY_RESULT_LIMIT = Integer.getInteger(
             Utils.PROPERTY_NAME_PREFIX
-            + "FactoryService.SELF_QUERY_RESULT_LIMIT", 1000);
+                    + "FactoryService.SELF_QUERY_RESULT_LIMIT", 1000);
     private EnumSet<ServiceOption> childOptions;
     private String nodeSelectorLink = ServiceUriPaths.DEFAULT_NODE_SELECTOR;
     private int selfQueryResultLimit = SELF_QUERY_RESULT_LIMIT;
+    private ServiceDocument childTemplate;
 
     /**
      * Creates a default instance of a factory service that can create and start instances
@@ -628,6 +634,10 @@ public abstract class FactoryService extends StatelessService {
                             Operation forwardOp = o.clone().setUri(remotePeerService)
                                     .setCompletion(fc);
 
+                            forwardOp.setConnectionTag(ServiceClient.CONNECTION_TAG_FORWARDING);
+                            forwardOp.toggleOption(NodeSelectorService.FORWARDING_OPERATION_OPTION,
+                                    true);
+
                             // fix up selfLink so it does not have factory prefix
                         initialState.documentSelfLink = initialState.documentSelfLink
                                 .replace(getSelfLink(), "");
@@ -645,16 +655,28 @@ public abstract class FactoryService extends StatelessService {
     }
 
     private void handleGetCompletion(Operation op) {
+        String query = op.getUri().getQuery();
         String oDataFilter = UriUtils.getODataFilterParamValue(op.getUri());
-        if (oDataFilter != null) {
-            handleGetOdataCompletion(op, oDataFilter);
+        boolean expand = UriUtils.hasODataExpandParamValue(op.getUri());
+        if (query == null || (oDataFilter == null && expand)) {
+            completeGetWithQuery(op, this.childOptions);
         } else {
-            completeGetWithQuery(this, op, this.childOptions);
+            handleGetOdataCompletion(op);
         }
     }
 
-    private void handleGetOdataCompletion(Operation op, String oDataFilter) {
-        QueryTask task = ODataUtils.toQuery(op);
+    private void handleGetOdataCompletion(Operation op) {
+        String path = UriUtils.getPathParamValue(op.getUri());
+        String peer = UriUtils.getPeerParamValue(op.getUri());
+        if (path != null && peer != null) {
+            handleNavigationRequest(op);
+            return;
+        }
+
+        Set<String> expandedQueryPropertyNames = QueryTaskUtils
+                .getExpandedQueryPropertyNames(getChildTemplate().documentDescription);
+
+        QueryTask task = ODataUtils.toQuery(op, false, expandedQueryPropertyNames);
         if (task == null) {
             return;
         }
@@ -666,26 +688,157 @@ public abstract class FactoryService extends StatelessService {
                 .setTermMatchValue(kind);
         task.querySpec.query.addBooleanClause(kindClause);
 
+        if (task.querySpec.sortTerm != null) {
+            String propertyName = task.querySpec.sortTerm.propertyName;
+            PropertyDescription propertyDescription = getChildTemplate()
+                    .documentDescription.propertyDescriptions.get(propertyName);
+            if (propertyDescription == null) {
+                op.fail(new IllegalArgumentException("Sort term is not a valid property: "
+                        + propertyName));
+                return;
+            }
+            task.querySpec.sortTerm.propertyType = propertyDescription.typeName;
+        }
+
+        if (task.querySpec.resultLimit != null) {
+            handleODataLimitRequest(op, task);
+            return;
+        }
+
         sendRequest(Operation.createPost(this, ServiceUriPaths.CORE_QUERY_TASKS).setBody(task)
                 .setCompletion((o, e) -> {
                     if (e != null) {
                         op.fail(e);
                         return;
                     }
-                    QueryTask qrt = o.getBody(QueryTask.class);
-                    op.setBodyNoCloning(qrt.results).complete();
+                    ServiceDocumentQueryResult result = o.getBody(QueryTask.class).results;
+                    ODataFactoryQueryResult odataResult = new ODataFactoryQueryResult();
+                    odataResult.totalCount = result.documentCount;
+                    result.copyTo(odataResult);
+                    op.setBodyNoCloning(odataResult).complete();
                 }));
     }
 
-    public static void completeGetWithQuery(Service s, Operation op,
-            EnumSet<ServiceOption> caps) {
+    private void handleNavigationRequest(Operation op) {
+        String path = UriUtils.buildUriPath(ServiceUriPaths.DEFAULT_NODE_SELECTOR,
+                ServiceUriPaths.SERVICE_URI_SUFFIX_FORWARDING);
+        String query = UriUtils.buildUriQuery(
+                UriUtils.FORWARDING_URI_PARAM_NAME_PATH, UriUtils.getPathParamValue(op.getUri()),
+                UriUtils.FORWARDING_URI_PARAM_NAME_PEER, UriUtils.getPeerParamValue(op.getUri()),
+                UriUtils.FORWARDING_URI_PARAM_NAME_TARGET, ForwardingTarget.PEER_ID.toString());
+        sendRequest(Operation.createGet(UriUtils.buildUri(this.getHost(), path, query)).setCompletion((o, e) -> {
+            if (e != null) {
+                op.fail(e);
+                return;
+            }
+
+            ServiceDocumentQueryResult result = o.getBody(QueryTask.class).results;
+            prepareNavigationResult(result);
+            op.setBodyNoCloning(result).complete();
+        }));
+    }
+
+    private void handleODataLimitRequest(Operation op, QueryTask task) {
+        if (task.querySpec.options.contains(QueryOption.COUNT)) {
+            task.querySpec.options.remove(QueryOption.COUNT);
+            task.querySpec.options.add(QueryOption.EXPAND_CONTENT);
+
+            Operation query = Operation
+                    .createPost(this, ServiceUriPaths.CORE_QUERY_TASKS)
+                    .setBody(task);
+            prepareRequest(query);
+
+            QueryTask countTask = new QueryTask();
+            countTask.setDirect(true);
+            countTask.querySpec = new QueryTask.QuerySpecification();
+            countTask.querySpec.options.add(QueryOption.COUNT);
+            countTask.querySpec.query = task.querySpec.query;
+
+            Operation count = Operation
+                    .createPost(this, ServiceUriPaths.CORE_QUERY_TASKS)
+                    .setBody(countTask);
+            prepareRequest(count);
+
+            OperationJoin.create(count, query).setCompletion((os, es) -> {
+                if (es != null && !es.isEmpty()) {
+                    op.fail(es.values().iterator().next());
+                    return;
+                }
+
+                ServiceDocumentQueryResult countResult = os.get(count.getId()).getBody(QueryTask.class).results;
+                ServiceDocumentQueryResult queryResult = os.get(query.getId()).getBody(QueryTask.class).results;
+
+                if (queryResult.nextPageLink == null) {
+                    ODataFactoryQueryResult odataResult = new ODataFactoryQueryResult();
+                    queryResult.copyTo(odataResult);
+                    op.setBodyNoCloning(odataResult).complete();
+                    return;
+                }
+
+                sendNextRequest(op, queryResult.nextPageLink, countResult.documentCount);
+            }).sendWith(this.getHost());
+            return;
+        }
+
+        sendRequest(Operation.createPost(this, ServiceUriPaths.CORE_QUERY_TASKS).setBody(task)
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        op.fail(e);
+                        return;
+                    }
+
+                    ServiceDocumentQueryResult result = o.getBody(QueryTask.class).results;
+                    if (result.nextPageLink == null) {
+                        ODataFactoryQueryResult odataResult = new ODataFactoryQueryResult();
+                        result.copyTo(odataResult);
+                        op.setBodyNoCloning(odataResult).complete();
+                        return;
+                    }
+
+                    sendNextRequest(op, result.nextPageLink, null);
+                }));
+    }
+
+    private void sendNextRequest(Operation op, String nextPageLink, Long totalCount) {
+        sendRequest(Operation.createGet(this, nextPageLink).setCompletion((o, e) -> {
+            if (e != null) {
+                op.fail(e);
+                return;
+            }
+
+            ODataFactoryQueryResult odataResult = new ODataFactoryQueryResult();
+            ServiceDocumentQueryResult result = o.getBody(QueryTask.class).results;
+            result.copyTo(odataResult);
+            odataResult.totalCount = totalCount == null ? result.documentCount : totalCount;
+            prepareNavigationResult(odataResult);
+            op.setBodyNoCloning(odataResult).complete();
+        }));
+    }
+
+    private void prepareNavigationResult(ServiceDocumentQueryResult result) {
+        if (result.nextPageLink != null) {
+            result.nextPageLink = convertNavigationLink(result.nextPageLink);
+        }
+        if (result.prevPageLink != null) {
+            result.prevPageLink = convertNavigationLink(result.prevPageLink);
+        }
+    }
+
+    private String convertNavigationLink(String navigationLink) {
+        URI uri = URI.create(navigationLink);
+        return this.getSelfLink() + UriUtils.URI_QUERY_CHAR + UriUtils.buildUriQuery(
+                UriUtils.FORWARDING_URI_PARAM_NAME_PATH, UriUtils.getPathParamValue(uri),
+                UriUtils.FORWARDING_URI_PARAM_NAME_PEER, UriUtils.getPeerParamValue(uri));
+    }
+
+    public void completeGetWithQuery(Operation op, EnumSet<ServiceOption> caps) {
         boolean doExpand = false;
         if (op.getUri().getQuery() != null) {
             doExpand = UriUtils.hasODataExpandParamValue(op.getUri());
         }
 
-        URI u = UriUtils.buildDocumentQueryUri(s.getHost(),
-                UriUtils.buildUriPath(s.getSelfLink(), UriUtils.URI_WILDCARD_CHAR),
+        URI u = UriUtils.buildDocumentQueryUri(getHost(),
+                UriUtils.buildUriPath(getSelfLink(), UriUtils.URI_WILDCARD_CHAR),
                 doExpand,
                 false,
                 caps != null ? caps : EnumSet.of(ServiceOption.NONE));
@@ -699,7 +852,7 @@ public abstract class FactoryService extends StatelessService {
                     op.setBodyNoCloning(o.getBodyRaw()).complete();
                 });
 
-        s.sendRequest(query);
+        sendRequest(query);
     }
 
     public void handleOptions(Operation op) {
@@ -754,6 +907,10 @@ public abstract class FactoryService extends StatelessService {
             toggleOption(ServiceOption.INSTRUMENTATION, true);
         }
 
+        if (this.hasOption(ServiceOption.IDEMPOTENT_POST)) {
+            childService.toggleOption(ServiceOption.IDEMPOTENT_POST, true);
+        }
+
         // set capability on child to indicate its created by a factory
         childService.toggleOption(ServiceOption.FACTORY_ITEM, true);
 
@@ -790,20 +947,27 @@ public abstract class FactoryService extends StatelessService {
 
     @Override
     public ServiceDocument getDocumentTemplate() {
-        try {
-            ServiceDocumentQueryResult r = new ServiceDocumentQueryResult();
-            Service s = createServiceInstance();
-            s.setHost(getHost());
-            ServiceDocument childTemplate = s.getDocumentTemplate();
-            r.documents = new HashMap<>();
-            childTemplate.documentSelfLink = UriUtils.buildUriPath(getSelfLink(), "child-template");
-            r.documentLinks.add(childTemplate.documentSelfLink);
-            r.documents.put(childTemplate.documentSelfLink, childTemplate);
-            return r;
-        } catch (Throwable e) {
-            logSevere(e);
-            return null;
+        ServiceDocumentQueryResult r = new ServiceDocumentQueryResult();
+        ServiceDocument childTemplate = getChildTemplate();
+        r.documents = new HashMap<>();
+        childTemplate.documentSelfLink = UriUtils.buildUriPath(getSelfLink(), "child-template");
+        r.documentLinks.add(childTemplate.documentSelfLink);
+        r.documents.put(childTemplate.documentSelfLink, childTemplate);
+        return r;
+    }
+
+    private ServiceDocument getChildTemplate() {
+        if (this.childTemplate == null) {
+            try {
+                Service s = createServiceInstance();
+                s.setHost(getHost());
+                this.childTemplate = s.getDocumentTemplate();
+            } catch (Throwable e) {
+                logSevere(e);
+                return null;
+            }
         }
+        return this.childTemplate;
     }
 
     @Override
@@ -821,6 +985,9 @@ public abstract class FactoryService extends StatelessService {
             return;
         }
 
+        // Become unavailable until synchronization is complete.
+        // If we are not the owner, we stay unavailable
+        setAvailable(false);
         OperationContext opContext = OperationContext.getOperationContext();
         // Only one node is responsible for synchronizing the child services of a given factory.
         // Ask the runtime if this is the owner node, using the factory self link as the key.
@@ -835,8 +1002,7 @@ public abstract class FactoryService extends StatelessService {
             }
             SelectOwnerResponse rsp = o.getBody(SelectOwnerResponse.class);
             if (rsp.isLocalHostOwner == false) {
-                // We do not need to do anything. A peer factory will update our
-                // status to available, when its done synchronizing everyone
+                // We do not need to do anything
                 maintOp.complete();
                 return;
             }
@@ -919,7 +1085,6 @@ public abstract class FactoryService extends StatelessService {
         });
         startOrSynchronizeChildServices(ctx);
     }
-
 
     public abstract Service createServiceInstance() throws Throwable;
 }

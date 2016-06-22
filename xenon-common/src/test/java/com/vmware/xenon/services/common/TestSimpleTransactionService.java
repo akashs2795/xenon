@@ -22,6 +22,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 import org.junit.After;
 import org.junit.Before;
@@ -30,15 +32,19 @@ import org.junit.Test;
 import com.vmware.xenon.common.BasicReusableHostTestCase;
 import com.vmware.xenon.common.FactoryService;
 import com.vmware.xenon.common.Operation;
+import com.vmware.xenon.common.OperationContext;
 import com.vmware.xenon.common.OperationProcessingChain;
 import com.vmware.xenon.common.RequestRouter;
 import com.vmware.xenon.common.Service;
 import com.vmware.xenon.common.ServiceDocument;
 import com.vmware.xenon.common.StatefulService;
+import com.vmware.xenon.common.StatelessService;
 import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.Utils;
+import com.vmware.xenon.common.test.TestContext;
 import com.vmware.xenon.common.test.VerificationHost;
 import com.vmware.xenon.services.common.QueryTask.Query;
+import com.vmware.xenon.services.common.QueryTask.Query.Occurance;
 import com.vmware.xenon.services.common.QueryTask.QuerySpecification.QueryOption;
 import com.vmware.xenon.services.common.QueryTask.QueryTerm.MatchType;
 import com.vmware.xenon.services.common.SimpleTransactionService.SimpleTransactionServiceState;
@@ -149,6 +155,66 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         deleteAccounts(txid, this.accountCount);
         commit(txid);
         countAccounts(null, 0);
+    }
+
+    @Test
+    public void testTransactionContextFlow() throws Throwable {
+        // stateless service that creates a bank account
+        // with the transactionId on the parent operation
+        // and one without
+        StatelessService childService = new StatelessService() {
+            @Override
+            public void handlePost(Operation postOp) {
+                try {
+                    createAccount(null, buildAccountId(0), 0.0, true);
+                    OperationContext.setTransactionId(null);
+                    createAccount(null, buildAccountId(1), 0.0, true);
+                } catch (Throwable e) {
+                    postOp.fail(e);
+                    return;
+                }
+                postOp.complete();
+            }
+        };
+        String servicePath = UUID.randomUUID().toString();
+        Operation startOp = Operation.createPost(UriUtils.buildUri(this.defaultHost, servicePath));
+        this.defaultHost.startService(startOp, childService);
+        // create two bank accounts
+        String txid = newTransaction();
+        TestContext ctx = testCreate(1);
+        Operation postOp = Operation.createPost(UriUtils.buildUri(this.defaultHost, servicePath))
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        ctx.failIteration(e);
+                        return;
+                    }
+                    // the transaction id here is what is set in the op; setting it
+                    // to null in the stateless service should not be reflected here
+                    if (OperationContext.getTransactionId() == null) {
+                        ctx.failIteration(new IllegalStateException("transactionId not set"));
+                        return;
+                    }
+                    ctx.completeIteration();
+                });
+        postOp.setTransactionId(txid);
+        this.defaultHost.send(postOp);
+        this.defaultHost.testWait(ctx);
+        // only one account should be visible at this stage within the transaction
+        countAccounts(txid, 1);
+        countAccounts(null, 1);
+        commit(txid);
+        // verify that two accounts are created (one as part of the transaction and one without)
+        countAccounts(null, 2);
+        this.baseAccountId = Utils.getNowMicrosUtc();
+        txid = newTransaction();
+        postOp = Operation.createPost(UriUtils.buildUri(this.defaultHost, servicePath));
+        postOp.setTransactionId(txid);
+        this.defaultHost.sendAndWaitExpectSuccess(postOp);
+        // transaction is still in progress, the account just created must be visible
+        countAccounts(txid, 1);
+        abort(txid);
+        // verify that the account created without a transaction context is still present
+        countAccounts(null, 1);
     }
 
     @Test
@@ -341,7 +407,154 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         countAccounts(null, 0);
     }
 
-    private void sendWithdrawDepositOperationPairs(String[] txids, int numOfTransfers, boolean independentTest) throws Throwable {
+    @Test
+    public void testHostRestartMidTransaction() throws Throwable {
+        // create a separate host for this test
+        VerificationHost vhost = VerificationHost.create(0);
+        try {
+            vhost.setMaintenanceIntervalMicros(TimeUnit.MILLISECONDS.toMicros(250));
+            vhost.start();
+            setUpHostWithAdditionalServices(vhost);
+            this.defaultHost = vhost;
+
+            // create accounts in a new transaction, do not commit yet
+            String txid = newTransaction();
+            createAccounts(txid, this.accountCount, 100.0);
+
+            // restart host
+            this.host.stopHostAndPreserveState(vhost);
+            boolean restarted = VerificationHost.restartStatefulHost(vhost);
+            if (!restarted) {
+                this.host.log(Level.WARNING, "Could not restart host, skipping test...");
+                return;
+            }
+            setUpHostWithAdditionalServices(vhost);
+            vhost.waitForReplicatedFactoryServiceAvailable(getAccountFactoryUri());
+            vhost.waitForReplicatedFactoryServiceAvailable(getTransactionFactoryUri());
+
+            // verify accounts can be used
+            for (int i = 0; i < this.accountCount; i++) {
+                withdrawFromAccount(txid, buildAccountId(i), 30.0, true);
+                verifyAccountBalance(txid, buildAccountId(i), 70.0);
+            }
+
+            // now commit...and verify count
+            commit(txid);
+            countAccounts(null, this.accountCount);
+
+            // clean up
+            deleteAccounts(null, this.accountCount);
+            countAccounts(null, 0);
+        } finally {
+            if (vhost.isStarted()) {
+                try {
+                    vhost.tearDown();
+                } catch (Exception e) {
+                    this.host.log(Level.WARNING, "Failed to tear down host during cleanup: ",
+                            e.getMessage());
+                }
+            }
+            this.defaultHost = this.host;
+        }
+    }
+
+    @Test
+    public void testClientFailureMidTransaction() throws Throwable {
+        // create accounts in a new transaction, do not commit
+        long transactionExpirationTimeMicros = Utils.getNowMicrosUtc()
+                + TimeUnit.SECONDS.toMicros(1);
+        String txid = newTransaction(transactionExpirationTimeMicros);
+        createAccounts(txid, this.accountCount, 0.0);
+        depositToAccounts(txid, this.accountCount, 100.0);
+
+        // if this was a real client, that for some reason failed/disconnected,
+        // no-one would have driven the transaction forward, effectively
+        // keeping the accounts 'locked'; unless the transaction automatically
+        // rolls-back...that's what we're verifying here.
+        Thread.sleep(TimeUnit.SECONDS.toMillis(2));
+        for (int i = 0; i < this.accountCount; i++) {
+            // the transaction has expired by now - verify we can access accounts
+            withdrawFromAccount(null, buildAccountId(i), 30.0, true);
+            verifyAccountBalance(null, buildAccountId(i), 70.0);
+        }
+
+        // now verify we can access in a new transaction
+        String txid2 = newTransaction();
+        for (int i = 0; i < this.accountCount; i++) {
+            withdrawFromAccount(txid2, buildAccountId(i), 20.0, true);
+            verifyAccountBalance(txid2, buildAccountId(i), 50.0);
+        }
+        commit(txid2);
+        sumAccounts(null, this.accountCount * 50.0);
+
+        deleteAccounts(null, this.accountCount);
+        countAccounts(null, 0);
+    }
+
+    @Test
+    public void testStrictUpdateChecking() throws Throwable {
+        // start a factory with ServiceOption.STRICT_UPDATE_CHECKING
+        this.defaultHost.startServiceAndWait(StrictUpdateCheckFactoryService.class,
+                StrictUpdateCheckFactoryService.SELF_LINK);
+
+        // create a document in the transaction
+        String txid = newTransaction();
+        StrictUpdateCheckService.StrictUpdateCheckServiceState initialState = new StrictUpdateCheckService.StrictUpdateCheckServiceState();
+        String id = UUID.randomUUID().toString();
+        initialState.documentSelfLink = id;
+        this.defaultHost.testStart(1);
+        Operation post = Operation.createPost(
+                UriUtils.buildUri(this.defaultHost, StrictUpdateCheckFactoryService.SELF_LINK))
+                .setBody(initialState).setTransactionId(txid)
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        this.defaultHost.failIteration(e);
+                        return;
+                    }
+
+                    this.defaultHost.completeIteration();
+                });
+        this.defaultHost.send(post);
+        this.defaultHost.testWait();
+
+        // get and patch with same version
+        URI childUri = UriUtils.buildUri(this.defaultHost,
+                StrictUpdateCheckFactoryService.SELF_LINK + "/" + id);
+        StrictUpdateCheckService.StrictUpdateCheckServiceState[] state = new StrictUpdateCheckService.StrictUpdateCheckServiceState[1];
+        this.defaultHost.testStart(1);
+        Operation get = Operation.createGet(childUri).setTransactionId(txid)
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        this.defaultHost.failIteration(e);
+                        return;
+                    }
+
+                    state[0] = o
+                            .getBody(StrictUpdateCheckService.StrictUpdateCheckServiceState.class);
+                    this.defaultHost.completeIteration();
+                });
+        this.defaultHost.send(get);
+        this.defaultHost.testWait();
+
+        this.defaultHost.testStart(1);
+        Operation patch = Operation.createPatch(childUri).setTransactionId(txid).setBody(state[0])
+                .setCompletion((o, e) -> {
+                    if (e != null) {
+                        this.defaultHost.failIteration(e);
+                        return;
+                    }
+
+                    this.defaultHost.completeIteration();
+                });
+        this.defaultHost.send(patch);
+        this.defaultHost.testWait();
+
+        // finally, commit transaction
+        commit(txid);
+    }
+
+    private void sendWithdrawDepositOperationPairs(String[] txids, int numOfTransfers,
+            boolean independentTest) throws Throwable {
         Collection<Operation> requests = new ArrayList<Operation>(numOfTransfers);
         Random rand = new Random();
         for (int k = 0; k < numOfTransfers; k++) {
@@ -359,7 +572,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
             withdraw.setCompletion((o, e) -> {
                 if (e != null) {
                     this.defaultHost.log("Transaction %s: failed to withdraw, aborting...", tid);
-                    Operation abort = SimpleTransactionService.TxUtils.buildAbortRequest(this.defaultHost,
+                    Operation abort = SimpleTransactionService.TxUtils.buildAbortRequest(
+                            this.defaultHost,
                             tid);
                     abort.setCompletion((op, ex) -> {
                         if (independentTest) {
@@ -419,12 +633,17 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
     }
 
     private String newTransaction() throws Throwable {
+        return newTransaction(0);
+    }
+
+    private String newTransaction(long transactionExpirationTimeMicros) throws Throwable {
         String txid = UUID.randomUUID().toString();
 
         // this section is required until IDEMPOTENT_POST is used
         this.defaultHost.testStart(1);
         SimpleTransactionServiceState initialState = new SimpleTransactionServiceState();
         initialState.documentSelfLink = txid;
+        initialState.documentExpirationTimeMicros = transactionExpirationTimeMicros;
         Operation post = Operation
                 .createPost(getTransactionFactoryUri())
                 .setBody(initialState).setCompletion((o, e) -> {
@@ -474,7 +693,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         createAccounts(transactionId, accounts, 0.0);
     }
 
-    private void createAccounts(String transactionId, int accounts, double initialBalance) throws Throwable {
+    private void createAccounts(String transactionId, int accounts, double initialBalance)
+            throws Throwable {
         this.defaultHost.testStart(accounts);
         for (int i = 0; i < accounts; i++) {
             createAccount(transactionId, buildAccountId(i), initialBalance, false);
@@ -487,7 +707,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         createAccount(transactionId, accountId, 0.0, independentTest);
     }
 
-    private void createAccount(String transactionId, String accountId, double initialBalance, boolean independentTest)
+    private void createAccount(String transactionId, String accountId, double initialBalance,
+            boolean independentTest)
             throws Throwable {
         if (independentTest) {
             this.defaultHost.testStart(1);
@@ -546,6 +767,9 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
             if (transactionId != null) {
                 queryBuilder.addFieldClause(ServiceDocument.FIELD_NAME_TRANSACTION_ID,
                         transactionId);
+            } else {
+                queryBuilder.addFieldClause(ServiceDocument.FIELD_NAME_TRANSACTION_ID, "*",
+                        MatchType.WILDCARD, Occurance.MUST_NOT_OCCUR);
             }
             QueryTask task = QueryTask.Builder.createDirectTask()
                     .setQuery(queryBuilder.build()).addOption(QueryOption.BROADCAST)
@@ -560,9 +784,11 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
     }
 
     private void sumAccounts(String transactionId, double expected) throws Throwable {
-        Query.Builder queryBuilder = Query.Builder.create().addKindFieldClause(BankAccountServiceState.class)
+        Query.Builder queryBuilder = Query.Builder.create()
+                .addKindFieldClause(BankAccountServiceState.class)
                 .addFieldClause(ServiceDocument.FIELD_NAME_SELF_LINK,
-                        BankAccountFactoryService.SELF_LINK + UriUtils.URI_PATH_CHAR + this.baseAccountId + UriUtils.URI_WILDCARD_CHAR,
+                        BankAccountFactoryService.SELF_LINK + UriUtils.URI_PATH_CHAR
+                                + this.baseAccountId + UriUtils.URI_WILDCARD_CHAR,
                         MatchType.WILDCARD);
         // we need to sum up the account balances in a logical 'snapshot'. rigt now the only way to do it
         // is using a transaction, so if transactionId is null we're creating a new transaction
@@ -573,7 +799,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         } else {
             queryBuilder.addFieldClause(ServiceDocument.FIELD_NAME_TRANSACTION_ID, transactionId);
         }
-        QueryTask task = QueryTask.Builder.createDirectTask().setQuery(queryBuilder.build()).addOption(QueryOption.BROADCAST).build();
+        QueryTask task = QueryTask.Builder.createDirectTask().setQuery(queryBuilder.build())
+                .addOption(QueryOption.BROADCAST).build();
         this.defaultHost.createQueryTaskService(task, false, true, task, null);
         double sum = 0;
         for (String serviceSelfLink : task.results.documentLinks) {
@@ -583,10 +810,13 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
                     this.defaultHost.log("Trying to read account %s", accountId);
                     BankAccountServiceState account = getAccount(transactionId, accountId);
                     sum += account.balance;
-                    this.defaultHost.log("Successfully read account %s, runnin sum=%f", accountId, sum);
+                    this.defaultHost.log("Successfully read account %s, running sum=%f", accountId,
+                            sum);
                     break;
                 } catch (IllegalStateException ex) {
-                    this.defaultHost.log("Could not read account %s probably due to a transactional conflict", accountId);
+                    this.defaultHost.log(
+                            "Could not read account %s probably due to a transactional conflict",
+                            accountId);
                     Thread.sleep(new Random().nextInt(SLEEP_BETWEEN_RETRIES_MILLIS));
                     if (i == RETRIES_IN_CASE_OF_CONFLICTS - 1) {
                         this.defaultHost.log("Giving up reading account %s", accountId);
@@ -641,7 +871,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         }
     }
 
-    private Operation createDepositOperation(String transactionId, String accountId, double amount) {
+    private Operation createDepositOperation(String transactionId, String accountId,
+            double amount) {
         BankAccountServiceRequest body = new BankAccountServiceRequest();
         body.kind = BankAccountServiceRequest.Kind.DEPOSIT;
         body.amount = amount;
@@ -689,7 +920,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         }
     }
 
-    private Operation createWithdrawOperation(String transactionId, String accountId, double amount) {
+    private Operation createWithdrawOperation(String transactionId, String accountId,
+            double amount) {
         BankAccountServiceRequest body = new BankAccountServiceRequest();
         body.kind = BankAccountServiceRequest.Kind.WITHDRAW;
         body.amount = amount;
@@ -703,7 +935,8 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
         return patch;
     }
 
-    private void verifyAccountBalance(String transactionId, String accountId, double expectedBalance)
+    private void verifyAccountBalance(String transactionId, String accountId,
+            double expectedBalance)
             throws Throwable {
         double balance = getAccount(transactionId, accountId).balance;
         assertEquals(expectedBalance, balance, 0);
@@ -884,4 +1117,64 @@ public class TestSimpleTransactionService extends BasicReusableHostTestCase {
 
     }
 
+    public static class StrictUpdateCheckFactoryService extends FactoryService {
+
+        public static final String SELF_LINK = ServiceUriPaths.SAMPLES + "/strict-updates";
+
+        public StrictUpdateCheckFactoryService() {
+            super(StrictUpdateCheckService.StrictUpdateCheckServiceState.class);
+        }
+
+        @Override
+        public Service createServiceInstance() throws Throwable {
+            return new StrictUpdateCheckService();
+        }
+
+        @Override
+        public OperationProcessingChain getOperationProcessingChain() {
+            if (super.getOperationProcessingChain() != null) {
+                return super.getOperationProcessingChain();
+            }
+
+            OperationProcessingChain opProcessingChain = new OperationProcessingChain(this);
+            opProcessingChain.add(new TransactionalRequestFilter(this));
+            setOperationProcessingChain(opProcessingChain);
+            return opProcessingChain;
+        }
+    }
+
+    public static class StrictUpdateCheckService extends StatefulService {
+
+        public static class StrictUpdateCheckServiceState extends ServiceDocument {
+
+        }
+
+        public StrictUpdateCheckService() {
+            super(StrictUpdateCheckServiceState.class);
+            super.toggleOption(ServiceOption.PERSISTENCE, true);
+            super.toggleOption(ServiceOption.REPLICATION, true);
+            super.toggleOption(ServiceOption.OWNER_SELECTION, true);
+            super.toggleOption(ServiceOption.CONCURRENT_GET_HANDLING, false);
+            super.toggleOption(ServiceOption.STRICT_UPDATE_CHECKING, true);
+        }
+
+        @Override
+        public OperationProcessingChain getOperationProcessingChain() {
+            if (super.getOperationProcessingChain() != null) {
+                return super.getOperationProcessingChain();
+            }
+
+            OperationProcessingChain opProcessingChain = new OperationProcessingChain(this);
+            opProcessingChain.add(new TransactionalRequestFilter(this));
+            setOperationProcessingChain(opProcessingChain);
+            return opProcessingChain;
+        }
+
+        @Override
+        public void handlePatch(Operation patch) {
+            StrictUpdateCheckServiceState newState = getBody(patch);
+            setState(patch, newState);
+            patch.complete();
+        }
+    }
 }

@@ -26,7 +26,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Consumer;
-
 import javax.security.cert.X509Certificate;
 
 import com.vmware.xenon.common.Service.Action;
@@ -72,27 +71,6 @@ public class Operation implements Cloneable {
 
         public void close() {
             throw new IllegalStateException();
-        }
-
-        private static int maxRequestSize = 1024 * 1024 * 16;
-
-        private static final int MAX_CLIENT_REQUEST_SIZE = 1024 * 1024 * 128;
-
-        /**
-         * Set maximum request/response size for socket I/O.
-         * Note that this has to be called very early before client / listener initialize.
-         * @param max size in bytes
-         */
-        public static void setMaxRequestSize(int max) {
-            maxRequestSize = max;
-        }
-
-        public static int getMaxRequestSize() {
-            return maxRequestSize;
-        }
-
-        public static int getMaxClientRequestSize() {
-            return MAX_CLIENT_REQUEST_SIZE;
         }
     }
 
@@ -275,6 +253,24 @@ public class Operation implements Cloneable {
          */
         CONNECTION_SHARING,
         /**
+         * Experimental
+         *
+         * Sends a request using the asynchronous HTTP pattern, allowing greater connection re-use. The
+         * send method creates a lightweight service that serves as the callback URI for receiving the
+         * completion status from the remote node. The callback URI is set as a header on the out bound
+         * request.
+         *
+         * The remote node, if it detects the presence of the callback location header, will create a
+         * new, local request, send it to the local service, and when that local request completes, it
+         * will issues a PATCH to the callback service on this node. The original request will then be
+         * completed and the client will see the response.
+         *
+         * The end result is that a TCP connection is not "blocked" while we wait for the remote node to
+         * return a response (similar to the benefits of the asynchronous REST pattern for services that
+         * implement it)
+         */
+        SEND_WITH_CALLBACK,
+        /**
          * Set by the client to both request a long lived connection on out-bound requests,
          * or indicate the operation was received on a long lived connection, for in-bound requests
          */
@@ -320,6 +316,7 @@ public class Operation implements Cloneable {
         public EnumSet<OperationOption> options;
         public String contextId;
         public String transactionId;
+        public String userInfo;
 
         public static final ServiceDocumentDescription DESCRIPTION = Operation.SerializedOperation
                 .buildDescription();
@@ -339,6 +336,7 @@ public class Operation implements Cloneable {
                 ctx.port = op.uri.getPort();
                 ctx.path = op.uri.getPath();
                 ctx.query = op.uri.getQuery();
+                ctx.userInfo = op.uri.getUserInfo();
             }
 
             Object body = op.getBodyRaw();
@@ -487,7 +485,7 @@ public class Operation implements Cloneable {
 
     /**
      * Infrastructure use only. Debugging only. Indicates this operation was converted from POST to PUT
-     * due to {@link ServiceOption.IDEMPOTENT_POST}
+     * due to {@link com.vmware.xenon.common.Service.ServiceOption#IDEMPOTENT_POST}
      */
     public static final String PRAGMA_DIRECTIVE_POST_TO_PUT = "xn-post-to-put";
 
@@ -525,6 +523,7 @@ public class Operation implements Cloneable {
     public static final int STATUS_CODE_ACCEPTED = HttpURLConnection.HTTP_ACCEPTED;
     public static final int STATUS_CODE_BAD_REQUEST = HttpURLConnection.HTTP_BAD_REQUEST;
     public static final int STATUS_CODE_BAD_METHOD = HttpURLConnection.HTTP_BAD_METHOD;
+    public static final int STATUS_CODE_INTERNAL_ERROR = HttpURLConnection.HTTP_INTERNAL_ERROR;
 
     public static final String MEDIA_TYPE_EVERYTHING_WILDCARDS = "*/*";
     public static final String EMPTY_JSON_BODY = "{}";
@@ -567,23 +566,26 @@ public class Operation implements Cloneable {
         op.expirationMicrosUtc = ctx.documentExpirationTimeMicros;
         op.setContextId(ctx.id.toString());
         op.referer = ctx.referer;
-        op.uri = UriUtils.buildUri(host, ctx.path, ctx.query);
+        op.uri = UriUtils.buildUri(host, ctx.path, ctx.query, ctx.userInfo);
         op.transactionId = ctx.transactionId;
         return op;
+    }
+
+    public Operation() {
+        // Set operation context from thread local.
+        // The thread local is populated by the service host when it handles an operation,
+        // which means that derivative operations will automatically inherit this context.
+        // It is set as early as possible since there is a possibility that it is
+        // overridden by the service implementation (i.e. when it impersonates).
+        this.authorizationCtx = OperationContext.getAuthorizationContext();
+        this.transactionId = OperationContext.getTransactionId();
+        this.contextId = OperationContext.getContextId();
     }
 
     static Operation createOperation(Action action, URI uri) {
         Operation op = new Operation();
         op.uri = uri;
         op.action = action;
-
-        // Set authorization context from thread local.
-        // The thread local is populated by the service host when it handles an operation,
-        // which means that derivative operations will automatically inherit this context.
-        // It is set as early as possible since there is a possibility that it is
-        // overridden by the service implementation (i.e. when it impersonates).
-        op.authorizationCtx = OperationContext.getAuthorizationContext();
-
         return op;
     }
 
@@ -795,7 +797,7 @@ public class Operation implements Cloneable {
 
     public Operation setBody(Object body) {
         if (body != null) {
-            if (isCloningDisabled()) {
+            if (hasOption(OperationOption.CLONING_DISABLED)) {
                 this.body = body;
             } else {
                 this.body = Utils.clone(body);
@@ -830,7 +832,7 @@ public class Operation implements Cloneable {
      * occurs only for local operations, not operations that have a serialized
      * body already attached (in the form of a JSON string).
      *
-     * If idempotent behavior is desired, use {@link getBodyRaw}
+     * If idempotent behavior is desired, use {@link #getBodyRaw}
      */
     @SuppressWarnings("unchecked")
     public <T> T getBody(Class<T> type) {
@@ -862,7 +864,8 @@ public class Operation implements Cloneable {
                 try {
                     this.body = Utils.fromJson(this.body, type);
                 } catch (com.google.gson.JsonSyntaxException e) {
-                    throw new IllegalArgumentException("Unparseable JSON body: " + e.getMessage());
+                    throw new IllegalArgumentException("Unparseable JSON body: " + e.getMessage(),
+                            e);
                 }
             } else {
                 throw new IllegalArgumentException(
@@ -1165,21 +1168,19 @@ public class Operation implements Cloneable {
             return;
         }
 
-        // Keep track of current authorization context so that code AFTER "op.complete()"
-        // or "op.fail()" retains its authorization context, and is not overwritten by
-        // the one associated with "op" (which might be different.
-        AuthorizationContext originalContext = OperationContext.getAuthorizationContext();
-        OperationContext.setAuthorizationContext(this.getAuthorizationContext());
-
+        // Keep track of current operation context so that code AFTER "op.complete()"
+        // or "op.fail()" retains its operation context, and is not overwritten by
+        // the one associated with "op" (which might be different).
+        OperationContext originalContext = OperationContext.getOperationContext();
         try {
-            OperationContext.setContextId(this.contextId);
+            OperationContext.setFrom(this);
             c.handle(this, e);
         } catch (Throwable outer) {
             Utils.logWarning("Uncaught failure inside completion: %s", Utils.toString(outer));
         }
 
         // Restore original context
-        OperationContext.setAuthorizationContext(originalContext);
+        OperationContext.setFrom(originalContext);
     }
 
     public boolean hasBody() {
@@ -1203,13 +1204,13 @@ public class Operation implements Cloneable {
             this.statusCode = o.statusCode;
             this.completion = existing;
             if (e != null) {
-                o.fail(e);
+                fail(e);
                 return;
             }
             try {
                 successHandler.accept(o);
             } catch (Throwable ex) {
-                o.fail(ex);
+                fail(ex);
             }
         });
     }
@@ -1300,16 +1301,12 @@ public class Operation implements Cloneable {
     }
 
     public boolean isKeepAlive() {
-        return this.remoteCtx == null ? false : this.options.contains(OperationOption.KEEP_ALIVE);
+        return this.remoteCtx == null ? false : hasOption(OperationOption.KEEP_ALIVE);
     }
 
     public Operation setKeepAlive(boolean isKeepAlive) {
         allocateRemoteContext();
-        if (isKeepAlive) {
-            this.options.add(OperationOption.KEEP_ALIVE);
-        } else {
-            this.options.remove(OperationOption.KEEP_ALIVE);
-        }
+        toggleOption(OperationOption.KEEP_ALIVE, isKeepAlive);
         return this;
     }
 
@@ -1326,6 +1323,19 @@ public class Operation implements Cloneable {
 
     public String getConnectionTag() {
         return this.remoteCtx == null ? null : this.remoteCtx.connectionTag;
+    }
+
+    public Operation toggleOption(OperationOption option, boolean enable) {
+        if (enable) {
+            this.options.add(option);
+        } else {
+            this.options.remove(option);
+        }
+        return this;
+    }
+
+    public boolean hasOption(OperationOption option) {
+        return this.options.contains(option);
     }
 
     void setHandlerInvokeTime(long nowMicrosUtc) {
@@ -1371,29 +1381,21 @@ public class Operation implements Cloneable {
      * logs invoke this method passing true for the argument.
      */
     public Operation disableFailureLogging(boolean disable) {
-        if (disable) {
-            this.options.add(OperationOption.FAILURE_LOGGING_DISABLED);
-        } else {
-            this.options.remove(OperationOption.FAILURE_LOGGING_DISABLED);
-        }
+        toggleOption(OperationOption.FAILURE_LOGGING_DISABLED, disable);
         return this;
     }
 
     public boolean isFailureLoggingDisabled() {
-        return this.options.contains(OperationOption.FAILURE_LOGGING_DISABLED);
+        return hasOption(OperationOption.FAILURE_LOGGING_DISABLED);
     }
 
     public Operation setReplicationDisabled(boolean disable) {
-        if (disable) {
-            this.options.add(OperationOption.REPLICATION_DISABLED);
-        } else {
-            this.options.remove(OperationOption.REPLICATION_DISABLED);
-        }
+        toggleOption(OperationOption.REPLICATION_DISABLED, disable);
         return this;
     }
 
     public boolean isReplicationDisabled() {
-        return this.options.contains(OperationOption.REPLICATION_DISABLED);
+        return hasOption(OperationOption.REPLICATION_DISABLED);
     }
 
     public Map<String, String> getRequestHeaders() {
@@ -1487,11 +1489,7 @@ public class Operation implements Cloneable {
      * @return
      */
     public Operation setTargetReplicated(boolean enable) {
-        if (enable) {
-            this.options.add(OperationOption.REPLICATED_TARGET);
-        } else {
-            this.options.remove(OperationOption.REPLICATED_TARGET);
-        }
+        toggleOption(OperationOption.REPLICATED_TARGET, enable);
         return this;
     }
 
@@ -1502,18 +1500,14 @@ public class Operation implements Cloneable {
      * @return
      */
     public boolean isTargetReplicated() {
-        return this.options.contains(OperationOption.REPLICATED_TARGET);
+        return hasOption(OperationOption.REPLICATED_TARGET);
     }
 
     /**
      * Infrastructure use only
      */
     public Operation setFromReplication(boolean isFromReplication) {
-        if (isFromReplication) {
-            this.options.add(OperationOption.REPLICATED);
-        } else {
-            this.options.remove(OperationOption.REPLICATED);
-        }
+        toggleOption(OperationOption.REPLICATED, isFromReplication);
         return this;
     }
 
@@ -1523,18 +1517,14 @@ public class Operation implements Cloneable {
      * Value indicating whether this operation was created to apply locally a remote update
      */
     public boolean isFromReplication() {
-        return this.options.contains(OperationOption.REPLICATED);
+        return hasOption(OperationOption.REPLICATED);
     }
 
     /**
      * Infrastructure use only
      */
     public Operation setConnectionSharing(boolean enable) {
-        if (enable) {
-            this.options.add(OperationOption.CONNECTION_SHARING);
-        } else {
-            this.options.remove(OperationOption.CONNECTION_SHARING);
-        }
+        toggleOption(OperationOption.CONNECTION_SHARING, enable);
         return this;
     }
 
@@ -1544,7 +1534,7 @@ public class Operation implements Cloneable {
      * Value indicating whether this operation is sharing a connection
      */
     public boolean isConnectionSharing() {
-        return this.options.contains(OperationOption.CONNECTION_SHARING);
+        return hasOption(OperationOption.CONNECTION_SHARING);
     }
 
     /**
@@ -1661,37 +1651,17 @@ public class Operation implements Cloneable {
         return this;
     }
 
-    /**
-     * Infrastructure use only.
-     *
-     * If cloning is disabled, setBody() will not
-     * clone the supplied argument. Requests received from external clients
-     * can avoid the overhead of cloning a response body by disabling cloning
-     */
-    public Operation setCloningDisabled(boolean disable) {
-        this.options.add(OperationOption.CLONING_DISABLED);
-        return this;
-    }
-
-    public boolean isCloningDisabled() {
-        return this.options.contains(OperationOption.CLONING_DISABLED);
-    }
-
     public boolean isNotification() {
         return hasPragmaDirective(PRAGMA_DIRECTIVE_NOTIFICATION);
     }
 
     public Operation setNotificationDisabled(boolean disable) {
-        if (disable) {
-            this.options.add(OperationOption.NOTIFICATION_DISABLED);
-        } else {
-            this.options.remove(OperationOption.NOTIFICATION_DISABLED);
-        }
+        toggleOption(OperationOption.NOTIFICATION_DISABLED, disable);
         return this;
     }
 
     public boolean isNotificationDisabled() {
-        return this.options.contains(OperationOption.NOTIFICATION_DISABLED);
+        return hasOption(OperationOption.NOTIFICATION_DISABLED);
     }
 
     boolean isForwardingDisabled() {

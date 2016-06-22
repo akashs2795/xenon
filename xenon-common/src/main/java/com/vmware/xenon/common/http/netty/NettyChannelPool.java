@@ -24,7 +24,6 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Logger;
-
 import javax.net.ssl.SSLContext;
 
 import io.netty.bootstrap.Bootstrap;
@@ -448,12 +447,13 @@ public class NettyChannelPool {
                 badContext = context;
                 context = new NettyChannelContext(group.getKey(),
                         NettyChannelContext.Protocol.HTTP11);
+                context.setOpenInProgress(true);
             }
-            context.updateLastUseTime();
             group.inUseChannels.add(context);
         }
 
         closeBadChannelContext(badContext);
+        context.updateLastUseTime();
         return context;
     }
 
@@ -609,10 +609,10 @@ public class NettyChannelPool {
             for (NettyChannelGroup g : this.channelGroups.values()) {
                 synchronized (g) {
                     for (NettyChannelContext c : g.availableChannels) {
-                        c.close();
+                        c.close(true);
                     }
                     for (NettyChannelContext c : g.inUseChannels) {
-                        c.close();
+                        c.close(true);
                     }
                     g.availableChannels.clear();
                     g.inUseChannels.clear();

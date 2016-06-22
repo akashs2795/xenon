@@ -1,6 +1,86 @@
 # CHANGELOG
 
-## 0.8.2-SNAPSHOT
+## 0.9.0-SNAPSHOT
+
+* Modify new QueryOption.SELECT_LINKS and QueryOption.EXPAND_LINKS behavior
+  to properly de-duplicate expanded state for selected links and make the
+  selection results similar to the existing documentLinks and documents,
+  in usage and behavior.
+  The selectedLinks map is now called selectedLinksPerDocument.
+
+## 0.8.2
+
+* Add global stats for total service pauses, resumes, cache clears
+  and ON_DEMAND_LOAD service stops on /core/management service.
+
+* Move a few infrastructure query related helper methods from Utils class
+  to QueryTaskUtils. The mergeQueryResults family of methods are used by
+  core services, so this should have minimal impact
+
+* Add PropertyUsageOption.REQUIRED to describe fields that are required.
+
+* Add validateState(description, state) to Utils to validate fields that
+  are required. If the field is null, REQUIRED and ID, a UUID is automatically
+  generated. If the field is null and REQUIRED, an Exception is thrown.
+
+* Add QueryOption.EXPAND_LINKS for expanding selected link values with the
+  target document state and including it in the query results. The serialized
+  state, is placed in the results.selectedLinks map.
+
+* Add PropertyUsageOption.SENSITIVE to describe fields that contain sensitive
+  information. When marked, the field will be hidden when serializing to JSON
+  using toJson(boolean hideSensitiveFields, boolean useHtmlFormatting).
+
+* Add support for configurable auth expiration via JVM property or login request to
+  BasicAuthenticationService.
+
+* Use SEND_WITH_CALLBACK in NettyHttpServiceClient if the request was
+  configured for connectionSharing and SSL
+
+* Add QueryOption.SELECT_LINKS for selecting fields marked with
+  PropertyUsageOption.LINK and including the link values in the query results.
+  The link selection will be used for future graph query support and
+  automatic link content expansion.
+
+* Add transaction flow support, across related operations, similar to
+  authorization context and context id flow support
+
+* Rename LuceneQueryTaskFactoryService and LuceneQueryTaskService to
+  QueryTaskFactoryService and QueryTaskService. Similar change for
+  local query task service. Service code should use
+      ServiceUriPaths.CORE_QUERY_TASKS
+      ServiceUriPaths.CORE_LOCAL_QUERY_TASKS
+  instead of the service SELF_LINK fields.
+
+* Upgrade Netty from 4.1.0.CR7 to 4.1.0.Final
+
+* Add new JVM properties in ServiceClient and ServiceRequestListener interfaces
+  for maximum request and response payload size limits.
+
+* Remove ServiceClient.sendWithCallback and ServiceHost.sendRequestWithCallback.
+  Functionality is available through OperationOption.SEND_WITH_CALLBACK,
+  symmetric to HTTP/2 functionality that is toggled through CONNECTION_SHARING
+
+* Add new static fields that map to JVM properties that enable selection of
+  HTTP scheme, for replication and forwarding, in NodeSelectorService interface.
+
+* Invalidate authz cache in ServiceHost when any authz service(UserGroupService,
+  RoleService or ResourceGroupService) is created, modified or deleted
+
+* Add Operation.toggleOption and Operation.hasOption to allow direct manipulation
+  of operation options and reduce code in Operation class methods
+
+* Add support for OData to filter by all searchable fields of a document.
+  Using "ALL_FIELDS" as a property name in a typical OData filter, e.g.
+  /documents?$filter=ALL_FIELDS eq foo, will unfold the search to all indexed
+  fields of document and their sub-fields nested up to 2 levels, excluding the
+  build-in ServiceDocument fields.
+
+* Introduce PropertyIndexingOption.FIXED_ITEM_NAME. This option directs the
+  document indexing service to ensure the indexing property name will be a fixed
+  value, matching that of the field itself. Applicable for fields of type MAP,
+  it will allow to make queries based on the name of the field to search for
+  keys and values of a map.
 
 ## 0.8.1
 

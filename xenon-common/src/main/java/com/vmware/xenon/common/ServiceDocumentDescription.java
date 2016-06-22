@@ -103,9 +103,25 @@ public class ServiceDocumentDescription {
         ID,
 
         /**
-         * Property is a Link (currently just used for DocumentDescription generation)
+         * Property is a link (relative URI path) to another indexed document
          */
         LINK,
+
+        /**
+         * Property is a collection of links (relative URI paths) to other indexed documents
+         */
+        LINKS,
+
+        /**
+         * Property contains sensitive information. Special framework methods should be used so the property value
+         * is hidden when serializing to JSON
+         */
+        SENSITIVE,
+
+        /**
+         * Property is required.
+         */
+        REQUIRED,
     }
 
     public enum PropertyIndexingOption {
@@ -116,6 +132,12 @@ public class ServiceDocumentDescription {
          * If the field is a collection of PODOs each item will be fully indexed.
          */
         EXPAND,
+
+        /**
+         * Directs the indexing service to ensure the indexing property name will be a fixed
+         * value, matching that of the field itself. Applicable for MAP
+         */
+        FIXED_ITEM_NAME,
 
         /**
          * Directs the indexing service to store but not index this field
