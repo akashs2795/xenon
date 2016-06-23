@@ -59,7 +59,6 @@ public class VidmAuthenticationService extends StatelessService {
     @Override
     public void handlePost(Operation op) {
 
-        System.out.print(true);
         AuthenticationRequestType requestType = op.getBody(AuthenticationRequest.class).requestType;
         // default to login for backward compatibility
         if (requestType == null) {
