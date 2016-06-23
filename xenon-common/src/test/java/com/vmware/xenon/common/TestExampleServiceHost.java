@@ -162,12 +162,12 @@ public class TestExampleServiceHost extends BasicReusableHostTestCase {
             this.host.send(get);
             this.host.testWait();
 
-            if (numberUsers[0] == 2) {
+            if (numberUsers[0] == 3) {
                 break;
             }
             Thread.sleep(250);
         }
-        assertTrue(numberUsers[0] == 2);
+        assertTrue(numberUsers[0] == 3);
     }
 
     /**

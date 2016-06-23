@@ -126,12 +126,12 @@ public class UserService extends StatefulService {
         // This type of email checking is EXTREMELY primitive.
         // Since this is expected to be populated by another service that connects
         // to an external identity provider, this can be kept simple.
-//        int firstAtIndex = state.email.indexOf('@');
-//        int lastAtIndex = state.email.lastIndexOf('@');
-//        if (firstAtIndex == -1 || (firstAtIndex != lastAtIndex)) {
-//            op.fail(new IllegalArgumentException("email is invalid"));
-//            return false;
-//        }
+        int firstAtIndex = state.email.indexOf('@');
+        int lastAtIndex = state.email.lastIndexOf('@');
+        if (firstAtIndex == -1 || (firstAtIndex != lastAtIndex)) {
+            op.fail(new IllegalArgumentException("email is invalid"));
+            return false;
+        }
 
         return true;
     }

@@ -20,10 +20,9 @@ import com.vmware.xenon.services.common.AuthCredentialsService.AuthCredentialsSe
 import com.vmware.xenon.services.common.QueryTask.Query;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.UserService.UserState;
-import com.vmware.xenon.services.common.authn.AuthenticationConstants;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
-import com.vmware.xenon.services.common.authn.BasicAuthenticationUtils.BasicAuthenticationContext;
+import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationUtils.BasicAuthenticationContext;
 
 public class BasicAuthenticationService extends StatelessService {
 

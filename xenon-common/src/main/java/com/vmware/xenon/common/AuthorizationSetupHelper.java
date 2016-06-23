@@ -202,6 +202,7 @@ public class AuthorizationSetupHelper {
     }
 
     public AuthorizationSetupHelper start() {
+//        System.out.println("Starting to create a user !");
         validate();
         this.currentStep = UserCreationStep.QUERY_USER;
         this.setupUser();
@@ -266,6 +267,8 @@ public class AuthorizationSetupHelper {
      * a set of chained completion handlers.
      */
     private void setupUser() {
+
+        // System.out.println("Setting up user !");
         switch (this.currentStep) {
         case QUERY_USER:
             queryUser();
@@ -304,6 +307,8 @@ public class AuthorizationSetupHelper {
      * create it.
      */
     private void queryUser() {
+
+//        System.out.println("querying a user !");
         Query userQuery = Query.Builder.create()
                 .addFieldClause(ServiceDocument.FIELD_NAME_KIND,
                         Utils.buildKind(UserState.class))
@@ -345,6 +350,8 @@ public class AuthorizationSetupHelper {
      * the selfLink of the user service.
      */
     private void makeUser() {
+
+//        System.out.println("making a user !");
         UserState user = new UserState();
         user.email = this.userEmail;
         if (this.userSelfLink != null) {
@@ -376,6 +383,8 @@ public class AuthorizationSetupHelper {
      * Make the credentials for the user.
      */
     private void makeCredentials() {
+
+//        System.out.println("makign credentials user !");
         AuthCredentialsServiceState auth = new AuthCredentialsServiceState();
         auth.userEmail = this.userEmail;
         auth.privateKey = this.userPassword;
@@ -573,6 +582,8 @@ public class AuthorizationSetupHelper {
      * When we complete the process, log the full details of the user
      */
     private void printUserDetails() {
+
+//        System.out.println("Success creating a user !");
         if (this.userEmail != null) {
             this.host.log(Level.INFO,
                     "Created user %s (%s) with credentials, user group (%s) "
