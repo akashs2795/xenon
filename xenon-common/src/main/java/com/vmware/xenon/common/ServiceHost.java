@@ -120,8 +120,7 @@ import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationConstants;
 import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
 import com.vmware.xenon.services.common.authn.vidm.VidmAuthenticationService;
-import com.vmware.xenon.services.common.authn.vidm.VidmVerifier;
-import com.vmware.xenon.services.common.authn.vidm.VidmVerifier.VidmTokenException;
+import com.vmware.xenon.services.common.authn.vidm.VidmVerifierService;
 
 /**
  * Service host manages service life cycle, delivery of operations (remote and local) and performing
@@ -506,23 +505,15 @@ public class ServiceHost implements ServiceRequestSender {
 
     private Signer tokenSigner;
     private Verifier tokenVerifier;
-    private VidmVerifier vidmTokenVerifier;
-    public String vidmUserLink;
 
     private AuthorizationContext systemAuthorizationContext;
     private AuthorizationContext guestAuthorizationContext;
 
+    protected ClaimsVerificationState externalClaimsData ;
+
     protected ServiceHost() {
         this.state = new ServiceHostState();
         this.state.id = UUID.randomUUID().toString();
-    }
-
-    public void setVidmUserLink(String vidmUserLink) {
-        this.vidmUserLink = vidmUserLink;
-    }
-
-    public String getVidmUserLink() {
-        return this.vidmUserLink;
     }
 
     public ServiceHost initialize(String[] args) throws Throwable {
@@ -1154,7 +1145,6 @@ public class ServiceHost implements ServiceRequestSender {
         byte[] secret = getJWTSecret();
         this.tokenSigner = new Signer(secret);
         this.tokenVerifier = new Verifier(secret);
-        this.vidmTokenVerifier = new VidmVerifier();
 
         if (getPort() != PORT_VALUE_LISTENER_DISABLED) {
             if (this.httpListener == null) {
@@ -1252,6 +1242,7 @@ public class ServiceHost implements ServiceRequestSender {
         addPrivilegedService(LuceneBlobIndexService.class);
         addPrivilegedService(BasicAuthenticationService.class);
         addPrivilegedService(VidmAuthenticationService.class);
+        addPrivilegedService(VidmVerifierService.class);
 
         // Capture authorization context; this function executes as the system user
         AuthorizationContext ctx = OperationContext.getAuthorizationContext();
@@ -1306,6 +1297,7 @@ public class ServiceHost implements ServiceRequestSender {
 
         coreServices.add(new BasicAuthenticationService());
         coreServices.add(new VidmAuthenticationService());
+        coreServices.add(new VidmVerifierService());
 
 
         Service transactionFactoryService = new TransactionFactoryService();
@@ -2994,6 +2986,55 @@ public class ServiceHost implements ServiceRequestSender {
         return;
     }
 
+    public void doVerification(String authToken , String authProvider) {
+        String targetURI = UriUtils.buildUriPath(
+                ServiceUriPaths.CORE_AUTHN_VERIFY, authProvider);
+        Operation postRequest = Operation.createPost(UriUtils.buildUri(this , targetURI))
+                .setReferer(this.getUri())
+                .setBody(new Object())
+                .addRequestHeader("token" , authToken)
+                .setCompletion((authOp ,authEx) -> {
+                    if (authEx != null) {
+                        log(Level.WARNING, "Exception verifying the token: %s" ,
+                                Utils.toString(authEx));
+                        this.externalClaimsData = null;
+                        return ;
+                    }
+                    if (authOp.getStatusCode() != Operation.STATUS_CODE_OK) {
+                        this.externalClaimsData = null;
+                        return;
+                    }
+                    this.externalClaimsData = authOp.getBody(ClaimsVerificationState.class);
+                    return ;
+                });
+        sendRequest(postRequest);
+    }
+
+    public Claims externalProviderVerification(String authToken, String authProvider) {
+
+        Claims claims = null ;
+        this.externalClaimsData = null ;
+
+        doVerification(authToken , authProvider);
+
+        System.out.println("External data : " + this.externalClaimsData + "\n\n\n");
+
+        if(this.externalClaimsData == null)
+            return claims ;
+
+        Claims.Builder builder = new Claims.Builder();
+        builder.setAudience(this.externalClaimsData.audience);
+        builder.setExpirationTime(this.externalClaimsData.expirationTime);
+        builder.setIssuedAt(this.externalClaimsData.issuedAt);
+        builder.setIssuer(this.externalClaimsData.issuer);
+        builder.setJwtId(this.externalClaimsData.jwtId);
+        builder.setNotBefore(this.externalClaimsData.notBefore);
+        builder.setSubject(this.externalClaimsData.subject);
+
+        claims = builder.getResult();
+        return claims;
+    }
+
     AuthorizationContext getAuthorizationContext(Operation op) {
         String authType = op.getRequestHeader(Operation.TYPE_HEADER);
         String token = op.getRequestHeader(Operation.REQUEST_AUTH_TOKEN_HEADER);
@@ -3017,8 +3058,8 @@ public class ServiceHost implements ServiceRequestSender {
         try {
             Claims claims = null;
             if (ctx == null) {
-                if (authType.matches(VidmAuthenticationService.VIDM_AUTH_NAME)) {
-                    claims = this.getVidmTokenVerifier().verify(token , getVidmUserLink());
+                if (!authType.matches("Basic")) {
+                    claims = externalProviderVerification(token , authType.toLowerCase());
                 } else {
                     claims = this.getTokenVerifier().verify(token, Claims.class);
                 }
@@ -3053,7 +3094,7 @@ public class ServiceHost implements ServiceRequestSender {
                 this.userLinktoTokenMap.put(claims.getSubject(), token);
             }
             return ctx;
-        } catch (VidmTokenException | TokenException | GeneralSecurityException e) {
+        } catch (TokenException | GeneralSecurityException e) {
             log(Level.INFO, "Error verifying token: %s", e);
         }
 
@@ -4937,18 +4978,6 @@ public class ServiceHost implements ServiceRequestSender {
      */
     protected Verifier getTokenVerifier() {
         return this.tokenVerifier;
-    }
-
-    /**
-     * Return the host's token verifier.
-     *
-     * Visibility is intentionally set to non-public since access to the signer
-     * must be limited to authorized services only.
-     *
-     * @return token verifier.
-     */
-    protected VidmVerifier getVidmTokenVerifier() {
-        return this.vidmTokenVerifier;
     }
 
     /**

@@ -235,8 +235,6 @@ public class VidmAuthenticationService extends StatelessService {
     }
 
     private boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
-
-        this.getHost().setVidmUserLink(userLink);
         SuiteToken suiteToken = getSuiteTokenObject(token);
         if (suiteToken ==  null) {
             return false;
