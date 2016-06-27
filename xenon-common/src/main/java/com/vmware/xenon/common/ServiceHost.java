@@ -120,6 +120,7 @@ import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationConstants;
 import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
 import com.vmware.xenon.services.common.authn.vidm.VidmAuthenticationService;
+import com.vmware.xenon.services.common.authn.vidm.VidmProperties;
 import com.vmware.xenon.services.common.authn.vidm.VidmVerifier;
 import com.vmware.xenon.services.common.authn.vidm.VidmVerifier.VidmTokenException;
 
@@ -256,6 +257,11 @@ public class ServiceHost implements ServiceRequestSender {
          * the JAR file of the host
          */
         public Path resourceSandbox;
+
+        /**
+         *
+         */
+        public Path vidmProperties;
 
     }
 
@@ -507,7 +513,6 @@ public class ServiceHost implements ServiceRequestSender {
     private Signer tokenSigner;
     private Verifier tokenVerifier;
     private VidmVerifier vidmTokenVerifier;
-    public String vidmUserLink;
 
     private AuthorizationContext systemAuthorizationContext;
     private AuthorizationContext guestAuthorizationContext;
@@ -515,14 +520,6 @@ public class ServiceHost implements ServiceRequestSender {
     protected ServiceHost() {
         this.state = new ServiceHostState();
         this.state.id = UUID.randomUUID().toString();
-    }
-
-    public void setVidmUserLink(String vidmUserLink) {
-        this.vidmUserLink = vidmUserLink;
-    }
-
-    public String getVidmUserLink() {
-        return this.vidmUserLink;
     }
 
     public ServiceHost initialize(String[] args) throws Throwable {
@@ -557,6 +554,15 @@ public class ServiceHost implements ServiceRequestSender {
 
         if (args.securePort != PORT_VALUE_LISTENER_DISABLED && args.securePort < 0) {
             throw new IllegalArgumentException("securePort: negative values not allowed");
+        }
+
+        if (args.vidmProperties != null) {
+            Properties prop = new Properties();
+            prop.load(Files.newInputStream(args.vidmProperties));
+
+            VidmProperties.setClientId(prop.getProperty("clientID"));
+            VidmProperties.setClientSecret(prop.getProperty("clientSecret"));
+            VidmProperties.setHostName(prop.getProperty("hostName"));
         }
 
         Path sandbox = args.sandbox;
@@ -3017,8 +3023,8 @@ public class ServiceHost implements ServiceRequestSender {
         try {
             Claims claims = null;
             if (ctx == null) {
-                if (authType.matches(VidmAuthenticationService.VIDM_AUTH_NAME)) {
-                    claims = this.getVidmTokenVerifier().verify(token , getVidmUserLink());
+                if (authType.matches(VidmProperties.VIDM_AUTH_NAME)) {
+                    claims = this.getVidmTokenVerifier().verify(token , VidmProperties.getVidmUserLink());
                 } else {
                     claims = this.getTokenVerifier().verify(token, Claims.class);
                 }
