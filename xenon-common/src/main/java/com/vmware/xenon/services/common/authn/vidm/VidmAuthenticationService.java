@@ -207,6 +207,12 @@ public class VidmAuthenticationService extends StatelessService {
                     this.authToken = accessToken ;
                     long expiryTime = Integer.parseInt(responseMap.get("expires_in"));
 
+                    if (accessToken == null) {
+                        logWarning("Exception validating user credentials");
+                        parentOp.fail(Operation.STATUS_CODE_FORBIDDEN);
+                        return;
+                    }
+
                     if (!associateAuthorizationContext(parentOp, userLink,
                             (Utils.getNowMicrosUtc() + (expiryTime * 1000000)) , accessToken)) {
                         parentOp.fail(Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
