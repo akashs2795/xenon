@@ -61,7 +61,6 @@
     <module>xenon-ui</module>
     <module>xenon-swagger</module>
     <module>xenon-dns</module>
-    <module>xenon-security</module>
   </modules>
 
   <properties>

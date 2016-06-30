@@ -41,14 +41,11 @@ public class VidmAuthenticationService extends StatelessService {
     public static final String WWW_AUTHENTICATE_HEADER_NAME = "WWW-Authenticate";
     public static final String WWW_AUTHENTICATE_HEADER_VALUE = "Basic realm=\"xenon\"";
     public static final String AUTHORIZATION_HEADER_NAME = "Authorization";
-    public static final String VIDM_AUTH_NAME = "Vidm";
-    private static final String VIDM_AUTH_SEPERATOR = " ";
-    private static final String VIDM_AUTH_USER_SEPERATOR = ":";
-    public static final String VIDM_USER = "vidm@localhost" ;
 
-    protected String hostName ;
-    protected String clientID ;
-    protected String clientSecret ;
+
+    protected String hostName = VidmProperties.getHostName();
+    protected String clientID = VidmProperties.getClientId();
+    protected String clientSecret = VidmProperties.getClientSecret();
     protected String authToken ;
 
     @Override
@@ -97,9 +94,9 @@ public class VidmAuthenticationService extends StatelessService {
             op.fail(Operation.STATUS_CODE_UNAUTHORIZED);
             return;
         }
-        String[] authHeaderParts = authHeader.split(VIDM_AUTH_SEPERATOR);
+        String[] authHeaderParts = authHeader.split(VidmProperties.VIDM_AUTH_SEPERATOR);
         // malformed header; send a 400 response
-        if (authHeaderParts.length != 2 || !authHeaderParts[0].equalsIgnoreCase(VIDM_AUTH_NAME)) {
+        if (authHeaderParts.length != 2 || !authHeaderParts[0].equalsIgnoreCase(VidmProperties.VIDM_AUTH_NAME)) {
             op.fail(Operation.STATUS_CODE_BAD_REQUEST);
             return;
         }
@@ -111,7 +108,7 @@ public class VidmAuthenticationService extends StatelessService {
             op.setStatusCode(Operation.STATUS_CODE_BAD_REQUEST).complete();
             return;
         }
-        String[] userNameAndPassword = authString.split(VIDM_AUTH_USER_SEPERATOR);
+        String[] userNameAndPassword = authString.split(VidmProperties.VIDM_AUTH_USER_SEPERATOR);
         if (userNameAndPassword.length != 2) {
             op.fail(Operation.STATUS_CODE_BAD_REQUEST);
             return;
@@ -133,7 +130,7 @@ public class VidmAuthenticationService extends StatelessService {
 
         QueryTask.Query emailClause = new QueryTask.Query()
                 .setTermPropertyName(UserService.UserState.FIELD_NAME_EMAIL)
-                .setTermMatchValue(VIDM_USER);
+                .setTermMatchValue(VidmProperties.VIDM_USER);
         emailClause.occurance = QueryTask.Query.Occurance.MUST_OCCUR;
 
         q.querySpec.query.addBooleanClause(emailClause);
@@ -166,10 +163,11 @@ public class VidmAuthenticationService extends StatelessService {
     }
 
     public void requestAccessToken(Operation op , String userLink , String userName, String password) {
-
-        this.clientID = "java_test_client";
-        this.clientSecret = "vmware123456789";
-        this.hostName = "https://blr-2nd-1-dhcp666.eng.vmware.com";
+        if (this.hostName == null || this.clientID == null || this.clientSecret == null) {
+            logWarning("Valid vIDM configuration not found ");
+            op.setStatusCode(Operation.STATUS_CODE_NOT_FOUND).complete();
+            return;
+        }
         String targetURL =
                 "/SAAS/API/1.0/oauth2/token?grant_type=password&username=" + userName
                         + "&password=" + password;
@@ -209,6 +207,12 @@ public class VidmAuthenticationService extends StatelessService {
                     this.authToken = accessToken ;
                     long expiryTime = Integer.parseInt(responseMap.get("expires_in"));
 
+                    if (accessToken == null) {
+                        logWarning("Exception validating user credentials");
+                        parentOp.fail(Operation.STATUS_CODE_FORBIDDEN);
+                        return;
+                    }
+
                     if (!associateAuthorizationContext(parentOp, userLink,
                             (Utils.getNowMicrosUtc() + (expiryTime * 1000000)) , accessToken)) {
                         parentOp.fail(Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
@@ -235,6 +239,7 @@ public class VidmAuthenticationService extends StatelessService {
     }
 
     private boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
+        VidmProperties.setVidmUserLink(userLink);
         SuiteToken suiteToken = getSuiteTokenObject(token);
         if (suiteToken ==  null) {
             return false;

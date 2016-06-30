@@ -79,7 +79,7 @@ public class VidmVerifierService extends StatelessService {
 
         QueryTask.Query emailClause = new QueryTask.Query()
                 .setTermPropertyName(UserService.UserState.FIELD_NAME_EMAIL)
-                .setTermMatchValue(VidmAuthenticationService.VIDM_USER);
+                .setTermMatchValue(VidmProperties.VIDM_USER);
         emailClause.occurance = QueryTask.Query.Occurance.MUST_OCCUR;
 
         q.querySpec.query.addBooleanClause(emailClause);

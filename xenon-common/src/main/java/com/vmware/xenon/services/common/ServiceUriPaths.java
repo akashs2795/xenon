@@ -92,10 +92,14 @@ public class ServiceUriPaths {
             "basic");
     public static final String CORE_AUTHN_VIDM = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHN,
             "vidm");
-
     public static final String CORE_AUTHN_VERIFY = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHN, "verify");
     public static final String CORE_AUTHN_VERIFY_VIDM = UriUtils.buildUriPath(
             ServiceUriPaths.CORE_AUTHN_VERIFY, "vidm");
+
+    public static final String CORE_AUTHN_CONFIG = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHN,
+            "config");
+    public static final String CORE_AUTHN_CONFIG_VIDM = UriUtils.buildUriPath(
+            ServiceUriPaths.CORE_AUTHN_CONFIG, "vidm");
 
     public static final String CORE_TRANSACTIONS = UriUtils.buildUriPath(ServiceUriPaths.CORE,
             "transactions");

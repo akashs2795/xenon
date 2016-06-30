@@ -35,6 +35,7 @@ public class TestExampleServiceHost extends BasicReusableHostTestCase {
 
     private static final String adminUser = "admin@localhost";
     private static final String exampleUser = "example@localhost";
+    private static final String vidmProperties = "C:/Users/srivastavaakash/Desktop/configuration.properties";
 
     /**
      * Verify that the example service host creates users as expected.
@@ -61,6 +62,7 @@ public class TestExampleServiceHost extends BasicReusableHostTestCase {
                     "--adminUserPassword=" + adminUser,
                     "--exampleUser=" + exampleUser,
                     "--exampleUserPassword=" + exampleUser,
+                    "--vidmProperties=" +  vidmProperties,
             };
 
             h.initialize(args);

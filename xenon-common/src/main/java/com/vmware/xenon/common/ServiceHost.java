@@ -121,6 +121,7 @@ import com.vmware.xenon.services.common.authn.AuthenticationConstants;
 import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
 import com.vmware.xenon.services.common.authn.vidm.VidmAuthenticationService;
 import com.vmware.xenon.services.common.authn.vidm.VidmVerifierService;
+import com.vmware.xenon.services.common.authn.vidm.VidmProperties;
 
 /**
  * Service host manages service life cycle, delivery of operations (remote and local) and performing
@@ -255,6 +256,11 @@ public class ServiceHost implements ServiceRequestSender {
          * the JAR file of the host
          */
         public Path resourceSandbox;
+
+        /**
+         *
+         */
+        public Path vidmProperties;
 
     }
 
@@ -548,6 +554,15 @@ public class ServiceHost implements ServiceRequestSender {
 
         if (args.securePort != PORT_VALUE_LISTENER_DISABLED && args.securePort < 0) {
             throw new IllegalArgumentException("securePort: negative values not allowed");
+        }
+
+        if (args.vidmProperties != null) {
+            Properties prop = new Properties();
+            prop.load(Files.newInputStream(args.vidmProperties));
+
+            VidmProperties.setClientId(prop.getProperty("clientID"));
+            VidmProperties.setClientSecret(prop.getProperty("clientSecret"));
+            VidmProperties.setHostName(prop.getProperty("hostName"));
         }
 
         Path sandbox = args.sandbox;
