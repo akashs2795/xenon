@@ -1242,10 +1242,10 @@ public class VerificationHost extends ExampleServiceHost {
         final int maxByteCount = 256 * 1024;
         if (properties.contains(TestProperty.LARGE_PAYLOAD)) {
             Random r = new Random();
-            int byteCount = NettyHttpServiceClient.getRequestPayloadSizeLimit() / 4;
+            int byteCount = getClient().getRequestPayloadSizeLimit() / 4;
             if (properties.contains(TestProperty.BINARY_PAYLOAD)) {
                 if (properties.contains(TestProperty.FORCE_FAILURE)) {
-                    byteCount = NettyHttpServiceClient.getRequestPayloadSizeLimit() * 2;
+                    byteCount = getClient().getRequestPayloadSizeLimit() * 2;
                 } else {
                     // make sure we do not blow memory if max request size is high
                     byteCount = Math.min(maxByteCount, byteCount);
@@ -1481,7 +1481,7 @@ public class VerificationHost extends ExampleServiceHost {
     }
 
     public void waitForServiceAvailable(String... links) throws Throwable {
-        for (String link: links) {
+        for (String link : links) {
             TestContext ctx = testCreate(1);
             this.registerForServiceAvailability(ctx.getCompletion(), link);
             ctx.await();
@@ -3032,18 +3032,33 @@ public class VerificationHost extends ExampleServiceHost {
      * Sends an operation and waits for completion, using default completion handler
      */
     public void sendAndWaitExpectSuccess(Operation op) throws Throwable {
-        // assume completion is attached, using our getCompletion() or
-        // getExpectedFailureCompletion()
         TestContext ctx = testCreate(1);
         send(op.setCompletion(ctx.getCompletion()));
         testWait(ctx);
     }
 
     public void sendAndWaitExpectFailure(Operation op) throws Throwable {
-        // assume completion is attached, using our getCompletion() or
-        // getExpectedFailureCompletion()
+        sendAndWaitExpectFailure(op, null);
+    }
+
+    public void sendAndWaitExpectFailure(Operation op, Integer expectedFailureCode)
+            throws Throwable {
         TestContext ctx = testCreate(1);
-        send(op.setCompletion(ctx.getExpectedFailureCompletion()));
+        CompletionHandler c = (o, e) -> {
+            if (e != null) {
+                if (expectedFailureCode != null) {
+                    if (!expectedFailureCode.equals(o.getStatusCode())) {
+                        ctx.failIteration(new IllegalStateException(
+                                "got unexpected status: " + expectedFailureCode));
+                        return;
+                    }
+                }
+                ctx.completeIteration();
+            } else {
+                ctx.failIteration(new IllegalStateException("got success, expected failure"));
+            }
+        };
+        send(op.setCompletion(c));
         testWait(ctx);
     }
 

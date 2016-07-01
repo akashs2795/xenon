@@ -63,6 +63,7 @@ import java.util.logging.ConsoleHandler;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
@@ -91,6 +92,7 @@ import com.vmware.xenon.services.common.AuthCredentialsService;
 import com.vmware.xenon.services.common.AuthorizationContextService;
 import com.vmware.xenon.services.common.ConsistentHashingNodeSelectorService;
 import com.vmware.xenon.services.common.FileContentService;
+import com.vmware.xenon.services.common.GraphQueryTaskFactoryService;
 import com.vmware.xenon.services.common.GuestUserService;
 import com.vmware.xenon.services.common.LocalQueryTaskFactoryService;
 import com.vmware.xenon.services.common.LuceneBlobIndexService;
@@ -385,6 +387,8 @@ public class ServiceHost implements ServiceRequestSender {
         public long serviceCacheClearDelayMicros = DEFAULT_OPERATION_TIMEOUT_MICROS;
         public String operationTracingLevel;
         public SslClientAuthMode sslClientAuthMode;
+        public int responsePayloadSizeLimit;
+        public int requestPayloadSizeLimit;
 
         public URI storageSandboxFileReference;
         public URI resourceSandboxFileReference;
@@ -1148,6 +1152,10 @@ public class ServiceHost implements ServiceRequestSender {
                 this.httpListener = new NettyHttpListener(this);
             }
 
+            if (this.state.responsePayloadSizeLimit > 0) {
+                this.httpListener.setResponsePayloadSizeLimit(this.state.responsePayloadSizeLimit);
+            }
+
             this.httpListener.start(getPort(), this.state.bindAddress);
         }
 
@@ -1166,6 +1174,10 @@ public class ServiceHost implements ServiceRequestSender {
                     this.httpsListener.setSSLContextFiles(this.state.certificateFileReference,
                             this.state.privateKeyFileReference, this.state.privateKeyPassphrase);
                 }
+                if (this.state.responsePayloadSizeLimit > 0) {
+                    this.httpsListener.setResponsePayloadSizeLimit(this.state.responsePayloadSizeLimit);
+                }
+
                 this.httpsListener.start(getSecurePort(), this.state.bindAddress);
             }
         }
@@ -1210,6 +1222,10 @@ public class ServiceHost implements ServiceRequestSender {
             trustManagerFactory.init((KeyStore) null);
             clientContext.init(null, trustManagerFactory.getTrustManagers(), null);
             this.client.setSSLContext(clientContext);
+        }
+
+        if (this.state.requestPayloadSizeLimit > 0) {
+            this.client.setRequestPayloadSizeLimit(this.state.requestPayloadSizeLimit);
         }
 
         // Start client as system user; it starts a callback service
@@ -1266,7 +1282,8 @@ public class ServiceHost implements ServiceRequestSender {
                         new LuceneBlobIndexService(),
                         new ServiceContextIndexService(),
                         new QueryTaskFactoryService(),
-                        new LocalQueryTaskFactoryService() };
+                        new LocalQueryTaskFactoryService(),
+                        new GraphQueryTaskFactoryService() };
                 startCoreServicesSynchronously(queryServiceArray);
             }
         }
@@ -2199,7 +2216,7 @@ public class ServiceHost implements ServiceRequestSender {
             return true;
         }
 
-        log(Level.INFO, "Converting (%d) POST to PUT for idempotent %s in stage %s",
+        log(Level.FINE, "Converting (%d) POST to PUT for idempotent %s in stage %s",
                 post.getId(),
                 servicePath, existing.getProcessingStage());
 
@@ -2688,7 +2705,7 @@ public class ServiceHost implements ServiceRequestSender {
         } else if (stateFromStore != null
                 && stateFromStore.documentSelfLink != null) {
             // set the initial state from what the index returned
-            serviceStartPost.setBodyNoCloning(stateFromStore);
+            serviceStartPost.setBody(stateFromStore);
         }
 
         processServiceStart(next, s,
@@ -4956,6 +4973,24 @@ public class ServiceHost implements ServiceRequestSender {
                     : this.state.bindAddress;
         }
         return this.info.ipAddresses.get(0);
+    }
+
+    public void setRequestPayloadSizeLimit(int limit) {
+        synchronized (this.state) {
+            if (isStarted()) {
+                throw new IllegalStateException("Already started");
+            }
+            this.state.requestPayloadSizeLimit = limit;
+        }
+    }
+
+    public void setResponsePayloadSizeLimit(int limit) {
+        synchronized (this.state) {
+            if (isStarted()) {
+                throw new IllegalStateException("Already started");
+            }
+            this.state.responsePayloadSizeLimit = limit;
+        }
     }
 
     /**
