@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 //
-//package com.vmware.xenon.services.common.authn.vidm;
+//package com.vmware.xenon.authn.vidm;
 //
 //import java.net.URI;
 //import java.util.Base64;
@@ -220,7 +220,7 @@
 //        this.host.send(Operation
 //                .createPost(authServiceUri)
 //                .setBody(new Object())
-//                .addRequestHeader(Operation.TYPE_HEADER , VidmAuthenticationService.VIDM_AUTH_NAME)
+//                .addRequestHeader(Operation.TYPE_HEADER , VidmProperties.VIDM_AUTH_NAME)
 //                .addRequestHeader(VidmAuthenticationService.AUTHORIZATION_HEADER_NAME, headerVal)
 //                .setCompletion(
 //                        (o, e) -> {

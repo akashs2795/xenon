@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.basic;
+package com.vmware.xenon.services.common.authn;
 
 import java.io.UnsupportedEncodingException;
 import java.util.Base64;
@@ -25,8 +25,6 @@ import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.services.common.QueryTask;
 import com.vmware.xenon.services.common.QueryTask.Query;
 import com.vmware.xenon.services.common.ServiceUriPaths;
-import com.vmware.xenon.services.common.authn.AuthenticationConstants;
-import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 
 /**
  * Utility class defining helper methods for basic authentication
@@ -127,6 +125,7 @@ public class BasicAuthenticationUtils {
 
     /**
      * This method invokes the query specified by the service to check if the user is
+     * valid
      * @param service service invoking this method
      * @param op Operation context of the login request
      * @param authContext authContext to perform the login checks

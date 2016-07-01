@@ -29,13 +29,12 @@ import com.vmware.xenon.services.common.ExampleServiceHost;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
-import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
+import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
 
 public class TestExampleServiceHost extends BasicReusableHostTestCase {
 
     private static final String adminUser = "admin@localhost";
     private static final String exampleUser = "example@localhost";
-    private static final String vidmProperties = "C:/Users/srivastavaakash/Desktop/configuration.properties";
 
     /**
      * Verify that the example service host creates users as expected.
@@ -62,7 +61,6 @@ public class TestExampleServiceHost extends BasicReusableHostTestCase {
                     "--adminUserPassword=" + adminUser,
                     "--exampleUser=" + exampleUser,
                     "--exampleUserPassword=" + exampleUser,
-                    "--vidmProperties=" +  vidmProperties,
             };
 
             h.initialize(args);
@@ -164,12 +162,12 @@ public class TestExampleServiceHost extends BasicReusableHostTestCase {
             this.host.send(get);
             this.host.testWait();
 
-            if (numberUsers[0] == 3) {
+            if (numberUsers[0] == 2) {
                 break;
             }
             Thread.sleep(250);
         }
-        assertTrue(numberUsers[0] == 3);
+        assertTrue(numberUsers[0] == 2);
     }
 
     /**

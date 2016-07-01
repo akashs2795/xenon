@@ -118,10 +118,7 @@ import com.vmware.xenon.services.common.UpdateIndexRequest;
 import com.vmware.xenon.services.common.UserGroupService;
 import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationConstants;
-import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
-import com.vmware.xenon.services.common.authn.vidm.VidmAuthenticationService;
-import com.vmware.xenon.services.common.authn.vidm.VidmVerifierService;
-import com.vmware.xenon.services.common.authn.vidm.VidmProperties;
+import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
 
 /**
  * Service host manages service life cycle, delivery of operations (remote and local) and performing
@@ -256,12 +253,6 @@ public class ServiceHost implements ServiceRequestSender {
          * the JAR file of the host
          */
         public Path resourceSandbox;
-
-        /**
-         *
-         */
-        public Path vidmProperties;
-
     }
 
     private static final LogFormatter LOG_FORMATTER = new LogFormatter();
@@ -554,15 +545,6 @@ public class ServiceHost implements ServiceRequestSender {
 
         if (args.securePort != PORT_VALUE_LISTENER_DISABLED && args.securePort < 0) {
             throw new IllegalArgumentException("securePort: negative values not allowed");
-        }
-
-        if (args.vidmProperties != null) {
-            Properties prop = new Properties();
-            prop.load(Files.newInputStream(args.vidmProperties));
-
-            VidmProperties.setClientId(prop.getProperty("clientID"));
-            VidmProperties.setClientSecret(prop.getProperty("clientSecret"));
-            VidmProperties.setHostName(prop.getProperty("hostName"));
         }
 
         Path sandbox = args.sandbox;
@@ -1256,8 +1238,6 @@ public class ServiceHost implements ServiceRequestSender {
         addPrivilegedService(OperationIndexService.class);
         addPrivilegedService(LuceneBlobIndexService.class);
         addPrivilegedService(BasicAuthenticationService.class);
-        addPrivilegedService(VidmAuthenticationService.class);
-        addPrivilegedService(VidmVerifierService.class);
 
         // Capture authorization context; this function executes as the system user
         AuthorizationContext ctx = OperationContext.getAuthorizationContext();
@@ -1311,9 +1291,6 @@ public class ServiceHost implements ServiceRequestSender {
         coreServices.add(new GuestUserService());
 
         coreServices.add(new BasicAuthenticationService());
-        coreServices.add(new VidmAuthenticationService());
-        coreServices.add(new VidmVerifierService());
-
 
         Service transactionFactoryService = new TransactionFactoryService();
         coreServices.add(transactionFactoryService);
@@ -3004,25 +2981,36 @@ public class ServiceHost implements ServiceRequestSender {
     public void doVerification(String authToken , String authProvider) {
         String targetURI = UriUtils.buildUriPath(
                 ServiceUriPaths.CORE_AUTHN_VERIFY, authProvider);
+        CountDownLatch verificationComplete = new CountDownLatch(1);
         Operation postRequest = Operation.createPost(UriUtils.buildUri(this , targetURI))
                 .setReferer(this.getUri())
                 .setBody(new Object())
                 .addRequestHeader("token" , authToken)
                 .setCompletion((authOp ,authEx) -> {
                     if (authEx != null) {
-                        log(Level.WARNING, "Exception verifying the token: %s" ,
+                        log(Level.WARNING, "Error verifying the token : %s" ,
                                 Utils.toString(authEx));
                         this.externalClaimsData = null;
+                        verificationComplete.countDown();
                         return ;
                     }
                     if (authOp.getStatusCode() != Operation.STATUS_CODE_OK) {
                         this.externalClaimsData = null;
+                        verificationComplete.countDown();
                         return;
                     }
                     this.externalClaimsData = authOp.getBody(ClaimsVerificationState.class);
+                    verificationComplete.countDown();
                     return ;
                 });
         sendRequest(postRequest);
+
+        try {
+            verificationComplete.await();
+        } catch (InterruptedException e) {
+            log(Level.INFO, "Timeout waiting for verification request to %s",
+                    postRequest.getUri().getPath());
+        }
     }
 
     public Claims externalProviderVerification(String authToken, String authProvider) {
@@ -3032,10 +3020,9 @@ public class ServiceHost implements ServiceRequestSender {
 
         doVerification(authToken , authProvider);
 
-        System.out.println("External data : " + this.externalClaimsData + "\n\n\n");
-
-        if(this.externalClaimsData == null)
-            return claims ;
+        if (this.externalClaimsData == null) {
+            return claims;
+        }
 
         Claims.Builder builder = new Claims.Builder();
         builder.setAudience(this.externalClaimsData.audience);
@@ -3083,8 +3070,8 @@ public class ServiceHost implements ServiceRequestSender {
             }
 
             if (claims == null) {
-                log(Level.INFO, "Request to %s has no claims found with token: %s",
-                        op.getUri().getPath(), token);
+                log(Level.INFO, "Request to %s has no claims found with given token",
+                        op.getUri().getPath());
                 return null;
             }
 

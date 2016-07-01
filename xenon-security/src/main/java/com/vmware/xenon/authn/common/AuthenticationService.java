@@ -11,27 +11,20 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.vidm;
+package com.vmware.xenon.authn.common;
 
-import java.lang.reflect.Type;
-import java.util.Map;
+import com.vmware.xenon.common.Operation;
 
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
+public interface AuthenticationService {
 
+    void handleLogout(Operation op);
 
-public class ConverterUtil {
+    void handleLogin(Operation op);
 
-    public String convertToJSON(Map<String, String> map) {
-        Gson gson = new Gson();
-        String json = gson.toJson(map);
-        return json;
-    }
+    void queryUserService(Operation parentOp, String userName, String password);
 
-    public Map<String, String> convertToMap(String json) {
-        Gson gson = new Gson();
-        Type type = new TypeToken<Map<String, String>>(){}.getType();
-        Map<String, String> map = gson.fromJson(json, type);
-        return map;
-    }
+    void authenticate(Operation parentOp, String userLink, String userName, String password);
+
+    boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime,
+            String token);
 }

@@ -11,17 +11,23 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.vidm;
+package com.vmware.xenon.authn.vidm;
 
 import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Type;
 import java.net.URI;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
+
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 import com.vmware.horizon.common.api.token.SuiteToken;
 import com.vmware.horizon.common.api.token.SuiteTokenConfiguration;
 import com.vmware.horizon.common.api.token.SuiteTokenException;
+import com.vmware.xenon.authn.common.AuthenticationService;
 import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.Operation.AuthorizationContext;
@@ -34,14 +40,14 @@ import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
 
-public class VidmAuthenticationService extends StatelessService {
+
+public class VidmAuthenticationService extends StatelessService implements AuthenticationService {
 
     public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VIDM;
 
     public static final String WWW_AUTHENTICATE_HEADER_NAME = "WWW-Authenticate";
     public static final String WWW_AUTHENTICATE_HEADER_VALUE = "Basic realm=\"xenon\"";
     public static final String AUTHORIZATION_HEADER_NAME = "Authorization";
-
 
     protected String hostName = VidmProperties.getHostName();
     protected String clientID = VidmProperties.getClientId();
@@ -72,7 +78,7 @@ public class VidmAuthenticationService extends StatelessService {
         }
     }
 
-    private void handleLogout(Operation op) {
+    public void handleLogout(Operation op) {
         if (op.getAuthorizationContext() == null) {
             op.complete();
             return;
@@ -85,7 +91,7 @@ public class VidmAuthenticationService extends StatelessService {
         op.complete();
     }
 
-    private void handleLogin(Operation op) {
+    public void handleLogin(Operation op) {
         String authHeader = op.getRequestHeader(AUTHORIZATION_HEADER_NAME);
 
         // if no header specified, send a 401 response and a header asking for VIDM auth
@@ -94,7 +100,7 @@ public class VidmAuthenticationService extends StatelessService {
             op.fail(Operation.STATUS_CODE_UNAUTHORIZED);
             return;
         }
-        String[] authHeaderParts = authHeader.split(VidmProperties.VIDM_AUTH_SEPERATOR);
+        String[] authHeaderParts = authHeader.split(VidmProperties.VIDM_AUTH_SEPARATOR);
         // malformed header; send a 400 response
         if (authHeaderParts.length != 2 || !authHeaderParts[0].equalsIgnoreCase(VidmProperties.VIDM_AUTH_NAME)) {
             op.fail(Operation.STATUS_CODE_BAD_REQUEST);
@@ -108,7 +114,7 @@ public class VidmAuthenticationService extends StatelessService {
             op.setStatusCode(Operation.STATUS_CODE_BAD_REQUEST).complete();
             return;
         }
-        String[] userNameAndPassword = authString.split(VidmProperties.VIDM_AUTH_USER_SEPERATOR);
+        String[] userNameAndPassword = authString.split(VidmProperties.VIDM_AUTH_USER_SEPARATOR);
         if (userNameAndPassword.length != 2) {
             op.fail(Operation.STATUS_CODE_BAD_REQUEST);
             return;
@@ -118,7 +124,7 @@ public class VidmAuthenticationService extends StatelessService {
         queryUserService(op, userNameAndPassword[0], userNameAndPassword[1]);
     }
 
-    private void queryUserService(Operation parentOp, String userName, String password) {
+    public void queryUserService(Operation parentOp, String userName, String password) {
         QueryTask q = new QueryTask();
         q.querySpec = new QueryTask.QuerySpecification();
 
@@ -151,7 +157,7 @@ public class VidmAuthenticationService extends StatelessService {
 
             // The user is valid; query the auth provider to check if the credentials match
             String userLink = rsp.results.documentLinks.get(0);
-            requestAccessToken(parentOp, userLink, userName, password);
+            authenticate(parentOp, userLink, userName, password);
         };
 
         Operation queryOp = Operation
@@ -162,7 +168,7 @@ public class VidmAuthenticationService extends StatelessService {
         sendRequest(queryOp);
     }
 
-    public void requestAccessToken(Operation op , String userLink , String userName, String password) {
+    public void authenticate(Operation op , String userLink , String userName, String password) {
         if (this.hostName == null || this.clientID == null || this.clientSecret == null) {
             logWarning("Valid vIDM configuration not found ");
             op.setStatusCode(Operation.STATUS_CODE_NOT_FOUND).complete();
@@ -199,9 +205,11 @@ public class VidmAuthenticationService extends StatelessService {
                     }
 
                     String response = authOp.getBody(String.class);
-                    ConverterUtil converter = new ConverterUtil();
+
+                    Gson gson = new Gson();
+                    Type type = new TypeToken<Map<String, String>>(){}.getType();
                     HashMap<String, String> responseMap = new HashMap<String, String>(
-                            converter.convertToMap(response));
+                            gson.fromJson(response, type));
 
                     String accessToken = responseMap.get("access_token");
                     this.authToken = accessToken ;
@@ -238,8 +246,9 @@ public class VidmAuthenticationService extends StatelessService {
         return suiteToken ;
     }
 
-    private boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
+    public boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
         VidmProperties.setVidmUserLink(userLink);
+
         SuiteToken suiteToken = getSuiteTokenObject(token);
         if (suiteToken ==  null) {
             return false;

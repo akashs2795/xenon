@@ -11,30 +11,27 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.vidm;
+package com.vmware.xenon.authn.vidm;
 
 import java.security.GeneralSecurityException;
 import java.util.HashSet;
+import java.util.logging.Level;
 
 import com.vmware.horizon.common.api.token.SuiteToken;
 import com.vmware.horizon.common.api.token.SuiteTokenConfiguration;
 import com.vmware.horizon.common.api.token.SuiteTokenException;
+import com.vmware.xenon.authn.common.VerifierService;
 import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.ClaimsVerificationState;
 import com.vmware.xenon.common.Operation;
-import com.vmware.xenon.common.ServiceDocument;
 import com.vmware.xenon.common.StatelessService;
-import com.vmware.xenon.common.Utils;
-import com.vmware.xenon.services.common.QueryTask;
 import com.vmware.xenon.services.common.ServiceUriPaths;
-import com.vmware.xenon.services.common.UserService;
 
-
-public class VidmVerifierService extends StatelessService {
+public class VidmVerifierService extends StatelessService implements VerifierService {
 
     public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VERIFY_VIDM;
 
-    private static final String hostName = "https://blr-2nd-1-dhcp666.eng.vmware.com" ;
+    private final String hostName = VidmProperties.getHostName() ;
     protected String userLink ;
 
     @Override
@@ -44,20 +41,17 @@ public class VidmVerifierService extends StatelessService {
 
     @Override
     public void handlePost(Operation op) {
-        System.out.println("\n\nVIDM-VERIFIER\nHandling POST");
         handleVerification(op);
     }
 
     public void handleVerification(Operation parentOp) {
-        System.out.println("Handling Verification");
         String token = parentOp.getRequestHeader("token");
-        System.out.println("Token : " + token);
-        queryUserService(parentOp);
+        this.userLink = VidmProperties.getVidmUserLink();
         ClaimsVerificationState claimsDocument;
         try {
-            claimsDocument = verify(token, this.userLink);
+            claimsDocument = verify(token);
         } catch (VidmTokenException | GeneralSecurityException e) {
-            System.out.println("Some exception ! ");
+            log(Level.WARNING , "Exception while verifying the token : %s" , e.getMessage());
             parentOp.fail(Operation.STATUS_CODE_NOT_FOUND);
             return ;
         }
@@ -66,75 +60,26 @@ public class VidmVerifierService extends StatelessService {
         return ;
     }
 
-    private void queryUserService(Operation parentOp) {
-        System.out.println("Querying user Service.");
-        QueryTask q = new QueryTask();
-        q.querySpec = new QueryTask.QuerySpecification();
-
-        String kind = Utils.buildKind(UserService.UserState.class);
-        QueryTask.Query kindClause = new QueryTask.Query()
-                .setTermPropertyName(ServiceDocument.FIELD_NAME_KIND)
-                .setTermMatchValue(kind);
-        q.querySpec.query.addBooleanClause(kindClause);
-
-        QueryTask.Query emailClause = new QueryTask.Query()
-                .setTermPropertyName(UserService.UserState.FIELD_NAME_EMAIL)
-                .setTermMatchValue(VidmProperties.VIDM_USER);
-        emailClause.occurance = QueryTask.Query.Occurance.MUST_OCCUR;
-
-        q.querySpec.query.addBooleanClause(emailClause);
-        q.taskInfo.isDirect = true;
-
-        Operation.CompletionHandler userServiceCompletion = (o, ex) -> {
-            if (ex != null) {
-                logWarning("Exception validating user: %s", Utils.toString(ex));
-                parentOp.setBodyNoCloning(o.getBodyRaw()).fail(o.getStatusCode());
-                return;
-            }
-
-            QueryTask rsp = o.getBody(QueryTask.class);
-            if (rsp.results.documentLinks.isEmpty()) {
-                parentOp.fail(Operation.STATUS_CODE_FORBIDDEN);
-                return;
-            }
-
-            // The user is valid; query the auth provider to check if the credentials match
-            String userLink = rsp.results.documentLinks.get(0);
-            System.out.println("Found UserLink : " + userLink);
-            this.userLink = userLink;
-        };
-
-        Operation queryOp = Operation
-                .createPost(this, ServiceUriPaths.CORE_QUERY_TASKS)
-                .setBody(q)
-                .setCompletion(userServiceCompletion);
-        setAuthorizationContext(queryOp, getSystemAuthorizationContext());
-        sendRequest(queryOp);
-    }
-
-    public ClaimsVerificationState verify(String jwt , String userLink) throws VidmTokenException,
+    public ClaimsVerificationState verify(String token) throws VidmTokenException,
             GeneralSecurityException {
 
-        System.out.println("Inside verify");
-        if (userLink == null) {
-            throw new GeneralSecurityException("UserLink Invalid : NULL");
+        if (this.hostName == null || this.userLink == null) {
+            throw new GeneralSecurityException("Invalid vIDM configuration details");
         }
-        SuiteToken suiteToken = getSuiteTokenObject(jwt);
+        SuiteToken suiteToken = getSuiteTokenObject(token);
 
         Claims.Builder builder = new Claims.Builder();
         builder.setIssuer(suiteToken.getIssuer());
-        builder.setSubject(userLink);
+        builder.setSubject(this.userLink);
         builder.setExpirationTime(suiteToken.getExpires() * 1000000);
 
         HashSet<String> audienceSet = new HashSet<String>();
         audienceSet.add(suiteToken.getAudience());
         builder.setAudience(audienceSet);
 
-        System.out.println("\n\n\nSetting Audience : " + audienceSet);
         Claims claims = builder.getResult();
 
         ClaimsVerificationState claimsVerificationState = new ClaimsVerificationState();
-        System.out.println("getting Audience : " + claims.getAudience());
 
         claimsVerificationState.audience = new HashSet<>(claims.getAudience());
         claimsVerificationState.expirationTime = claims.getExpirationTime();
@@ -143,21 +88,20 @@ public class VidmVerifierService extends StatelessService {
         claimsVerificationState.jwtId = claims.getJwtId();
         claimsVerificationState.notBefore = claims.getNotBefore();
         claimsVerificationState.subject = claims.getSubject();
-        System.out.println("Claim Verification state : " + claimsVerificationState +  "\n\n\n");
 
         return claimsVerificationState;
     }
 
     private SuiteToken getSuiteTokenObject(String token) throws VidmTokenException {
         SuiteTokenConfiguration s = new SuiteTokenConfiguration();
-        s.setPublicKeyUrl(hostName + "/SAAS/API/1.0/REST/auth/token?attribute=publicKey");
-        s.setRevokeCheckUrl(hostName + "/SAAS/API/1.0/REST/auth/token?attribute=isRevoked");
+        s.setPublicKeyUrl(this.hostName + "/SAAS/API/1.0/REST/auth/token?attribute=publicKey");
+        s.setRevokeCheckUrl(this.hostName + "/SAAS/API/1.0/REST/auth/token?attribute=isRevoked");
 
         SuiteToken suiteToken = null ;
         try {
             suiteToken = SuiteToken.decodeSuiteToken(token);
         } catch (SuiteTokenException e) {
-            throw new VidmTokenException("Unable to decode the suite Token");
+            throw new VidmTokenException("Invalid vIDM Token");
         }
         return suiteToken ;
     }

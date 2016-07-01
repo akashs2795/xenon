@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.basic;
+package com.vmware.xenon.services.common.authn;
 
 
 import com.vmware.xenon.common.Operation;
@@ -20,9 +20,8 @@ import com.vmware.xenon.services.common.AuthCredentialsService.AuthCredentialsSe
 import com.vmware.xenon.services.common.QueryTask.Query;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.UserService.UserState;
-import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
-import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationUtils.BasicAuthenticationContext;
+import com.vmware.xenon.services.common.authn.BasicAuthenticationUtils.BasicAuthenticationContext;
 
 public class BasicAuthenticationService extends StatelessService {
 
@@ -54,13 +53,13 @@ public class BasicAuthenticationService extends StatelessService {
             }
             BasicAuthenticationContext authContext = new BasicAuthenticationContext();
             authContext.userQuery = Query.Builder.create().addKindFieldClause(UserState.class)
-            .addFieldClause(UserState.FIELD_NAME_EMAIL, userNameAndPassword[0])
-            .build();
+                    .addFieldClause(UserState.FIELD_NAME_EMAIL, userNameAndPassword[0])
+                    .build();
 
             authContext.authQuery = Query.Builder.create().addKindFieldClause(AuthCredentialsServiceState.class)
-            .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_EMAIL, userNameAndPassword[0])
-            .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_PRIVATE_KEY, userNameAndPassword[1])
-            .build();
+                    .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_EMAIL, userNameAndPassword[0])
+                    .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_PRIVATE_KEY, userNameAndPassword[1])
+                    .build();
             BasicAuthenticationUtils.handleLogin(this, op, authContext);
             break;
         case LOGOUT:
@@ -70,10 +69,4 @@ public class BasicAuthenticationService extends StatelessService {
             break;
         }
     }
-
-
-
-
-
-
 }

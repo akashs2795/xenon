@@ -22,10 +22,6 @@ import com.vmware.xenon.services.common.ExampleService.ExampleServiceState;
 
 public class ExampleServiceHost extends ServiceHost {
 
-    private static final String vidmUser = "vidm@localhost" ;
-    private static final String vidmUserPassword = "vidmUserPassword" ;
-
-
     public static class ExampleHostArguments extends Arguments {
         /**
          * The email address of a user that should be granted "admin" privileges to all services
@@ -97,13 +93,6 @@ public class ExampleServiceHost extends ServiceHost {
         // The args are null because many of the tests use this class (via VerificationHost)
         // without providing arguments.
         if (this.args != null) {
-
-            AuthorizationSetupHelper.create()
-                    .setHost(this)
-                    .setUserEmail(ExampleServiceHost.vidmUser)
-                    .setUserPassword(ExampleServiceHost.vidmUserPassword)
-                    .setIsAdmin(true)
-                    .start();
 
             if (this.args.adminUser != null) {
                 AuthorizationSetupHelper.create()

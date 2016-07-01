@@ -11,13 +11,14 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.vidm;
+package com.vmware.xenon.authn.vidm;
 
 public class VidmProperties {
     public static final String VIDM_AUTH_NAME = "Vidm";
-    public static final String VIDM_AUTH_SEPERATOR = " ";
-    public static final String VIDM_AUTH_USER_SEPERATOR = ":";
+    public static final String VIDM_AUTH_SEPARATOR = " ";
+    public static final String VIDM_AUTH_USER_SEPARATOR = ":";
     public static final String VIDM_USER = "vidm@localhost" ;
+    public static final String VIDM_USER_PASSWORD = "vidmUserPassword" ;
     private static String HOST_NAME ;
     private static String CLIENT_ID ;
     private static String CLIENT_SECRET ;

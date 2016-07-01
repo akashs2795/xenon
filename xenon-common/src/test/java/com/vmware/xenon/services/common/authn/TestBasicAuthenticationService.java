@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.services.common.authn.basic;
+package com.vmware.xenon.services.common.authn;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -36,8 +36,6 @@ import com.vmware.xenon.services.common.AuthCredentialsService;
 import com.vmware.xenon.services.common.AuthCredentialsService.AuthCredentialsServiceState;
 import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.UserService.UserState;
-import com.vmware.xenon.services.common.authn.AuthenticationConstants;
-import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
 
 public class TestBasicAuthenticationService extends BasicTestCase {

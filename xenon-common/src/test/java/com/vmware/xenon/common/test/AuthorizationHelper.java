@@ -42,7 +42,7 @@ import com.vmware.xenon.services.common.UserGroupService;
 import com.vmware.xenon.services.common.UserGroupService.UserGroupState;
 import com.vmware.xenon.services.common.UserService.UserState;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
-import com.vmware.xenon.services.common.authn.basic.BasicAuthenticationService;
+import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
 
 public class AuthorizationHelper {
 
