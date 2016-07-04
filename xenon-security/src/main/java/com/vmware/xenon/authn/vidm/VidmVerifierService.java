@@ -15,7 +15,6 @@ package com.vmware.xenon.authn.vidm;
 
 import java.security.GeneralSecurityException;
 import java.util.HashSet;
-import java.util.logging.Level;
 
 import com.vmware.horizon.common.api.token.SuiteToken;
 import com.vmware.horizon.common.api.token.SuiteTokenConfiguration;
@@ -23,45 +22,19 @@ import com.vmware.horizon.common.api.token.SuiteTokenException;
 import com.vmware.xenon.authn.common.VerifierService;
 import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.ClaimsVerificationState;
-import com.vmware.xenon.common.Operation;
-import com.vmware.xenon.common.StatelessService;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 
-public class VidmVerifierService extends StatelessService implements VerifierService {
+public class VidmVerifierService extends VerifierService {
 
     public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VERIFY_VIDM;
 
     private final String hostName = VidmProperties.getHostName() ;
-    protected String userLink ;
-
-    @Override
-    public void authorizeRequest(Operation op) {
-        op.complete();
-    }
-
-    @Override
-    public void handlePost(Operation op) {
-        handleVerification(op);
-    }
-
-    public void handleVerification(Operation parentOp) {
-        String token = parentOp.getRequestHeader("token");
-        this.userLink = VidmProperties.getVidmUserLink();
-        ClaimsVerificationState claimsDocument;
-        try {
-            claimsDocument = verify(token);
-        } catch (VidmTokenException | GeneralSecurityException e) {
-            log(Level.WARNING , "Exception while verifying the token : %s" , e.getMessage());
-            parentOp.fail(Operation.STATUS_CODE_NOT_FOUND);
-            return ;
-        }
-        parentOp.setStatusCode(Operation.STATUS_CODE_OK);
-        parentOp.setBodyNoCloning(claimsDocument).complete();
-        return ;
-    }
+    private String userLink ;
 
     public ClaimsVerificationState verify(String token) throws VidmTokenException,
             GeneralSecurityException {
+
+        this.userLink = VidmProperties.getVidmUserLink();
 
         if (this.hostName == null || this.userLink == null) {
             throw new GeneralSecurityException("Invalid vIDM configuration details");

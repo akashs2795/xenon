@@ -13,12 +13,50 @@
 
 package com.vmware.xenon.authn.common;
 
+import java.util.logging.Level;
+
 import com.vmware.xenon.common.ClaimsVerificationState;
 import com.vmware.xenon.common.Operation;
+import com.vmware.xenon.common.StatelessService;
 
-public interface VerifierService {
+public abstract class VerifierService extends StatelessService{
 
-    void handleVerification(Operation parentOp);
+    @Override
+    public void authorizeRequest(Operation op) {
+        op.complete();
+    }
 
-    ClaimsVerificationState verify(String token) throws Exception ;
+    @Override
+    public void handlePost(Operation op) {
+        handleVerification(op);
+    }
+
+    /**
+     * handleVerification function is triggered when a POST request is made to the verification
+     * service of any auth provider. It sets the operation state as the claimsVerificationState
+     * after successful verification
+     */
+    public void handleVerification(Operation parentOp) {
+        String token = parentOp.getRequestHeader("token");
+        ClaimsVerificationState claimsDocument;
+        try {
+            claimsDocument = verify(token);
+        } catch (Exception e) {
+            log(Level.WARNING , "Exception while verifying the token : %s" , e.getMessage());
+            parentOp.fail(Operation.STATUS_CODE_NOT_FOUND);
+            return ;
+        }
+        parentOp.setStatusCode(Operation.STATUS_CODE_OK);
+        parentOp.setBodyNoCloning(claimsDocument).complete();
+        return ;
+    }
+
+    /**
+     * The auth provider has to implement this method which will decode the token
+     * and generate a ClaimsVerificationState object in return. If unable to decode the token or
+     * create the object, throw an appropriate exception
+     * @return ClaimsVerificationState
+     * @throws Exception
+     */
+    public abstract ClaimsVerificationState verify(String token) throws Exception ;
 }
