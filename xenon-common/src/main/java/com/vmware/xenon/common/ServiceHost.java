@@ -2995,7 +2995,16 @@ public class ServiceHost implements ServiceRequestSender {
         return;
     }
 
-    public void doVerification(String authToken , String authProvider) {
+    /**
+     * doVerification creates a POST request to the respective auth verifier service
+     * and sends the auth token as a header. Since we need the operation to be run synchronously,
+     * we add a CountDownLatch.
+     *
+     * NOTE : Currently the verification service is completely synchronous hence this logic works.
+     *        When a support for new auth provider is added, ensure that its verification service
+     *        is also synchronous else this will simply return back a null claims data.
+     */
+    public void doVerificationSynchronously(String authToken , String authProvider) {
         String targetURI = UriUtils.buildUriPath(
                 ServiceUriPaths.CORE_AUTHN_VERIFY, authProvider);
         CountDownLatch verificationComplete = new CountDownLatch(1);
@@ -3030,12 +3039,19 @@ public class ServiceHost implements ServiceRequestSender {
         }
     }
 
+    /**
+     * Using doVerificationSynchronously method we get the claims data from the verifier service
+     * as a claimsVerificationState. We then create a Claims object using the data we just received
+     * and return that object. If any error occurred while verifying the token and getting required
+     * data, simply return null.
+     * @return Claims
+     */
     public Claims externalProviderVerification(String authToken, String authProvider) {
 
         Claims claims = null ;
         this.externalClaimsData = null ;
 
-        doVerification(authToken , authProvider);
+        doVerificationSynchronously(authToken , authProvider);
 
         if (this.externalClaimsData == null) {
             return claims;

@@ -17,9 +17,8 @@ import java.security.GeneralSecurityException;
 import java.util.HashSet;
 
 import com.vmware.horizon.common.api.token.SuiteToken;
-import com.vmware.horizon.common.api.token.SuiteTokenConfiguration;
-import com.vmware.horizon.common.api.token.SuiteTokenException;
 import com.vmware.xenon.authn.common.VerifierService;
+import com.vmware.xenon.authn.vidm.VidmUtils.VidmTokenException;
 import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.ClaimsVerificationState;
 import com.vmware.xenon.services.common.ServiceUriPaths;
@@ -39,7 +38,7 @@ public class VidmVerifierService extends VerifierService {
         if (this.hostName == null || this.userLink == null) {
             throw new GeneralSecurityException("Invalid vIDM configuration details");
         }
-        SuiteToken suiteToken = getSuiteTokenObject(token);
+        SuiteToken suiteToken = VidmUtils.getSuiteTokenObject(token);
 
         Claims.Builder builder = new Claims.Builder();
         builder.setIssuer(suiteToken.getIssuer());
@@ -63,28 +62,6 @@ public class VidmVerifierService extends VerifierService {
         claimsVerificationState.subject = claims.getSubject();
 
         return claimsVerificationState;
-    }
-
-    private SuiteToken getSuiteTokenObject(String token) throws VidmTokenException {
-        SuiteTokenConfiguration s = new SuiteTokenConfiguration();
-        s.setPublicKeyUrl(this.hostName + "/SAAS/API/1.0/REST/auth/token?attribute=publicKey");
-        s.setRevokeCheckUrl(this.hostName + "/SAAS/API/1.0/REST/auth/token?attribute=isRevoked");
-
-        SuiteToken suiteToken = null ;
-        try {
-            suiteToken = SuiteToken.decodeSuiteToken(token);
-        } catch (SuiteTokenException e) {
-            throw new VidmTokenException("Invalid vIDM Token");
-        }
-        return suiteToken ;
-    }
-
-    public static class VidmTokenException extends Exception {
-        private static final long serialVersionUID = 1640724864336370401L;
-
-        VidmTokenException(String message) {
-            super(message);
-        }
     }
 }
 

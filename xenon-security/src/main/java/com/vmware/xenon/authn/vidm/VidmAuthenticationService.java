@@ -20,34 +20,27 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.logging.Level;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 import com.vmware.horizon.common.api.token.SuiteToken;
-import com.vmware.horizon.common.api.token.SuiteTokenConfiguration;
-import com.vmware.horizon.common.api.token.SuiteTokenException;
 import com.vmware.xenon.authn.common.AuthenticationService;
+import com.vmware.xenon.authn.vidm.VidmUtils.VidmTokenException;
 import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.Operation.AuthorizationContext;
 import com.vmware.xenon.common.ServiceDocument;
-import com.vmware.xenon.common.StatelessService;
 import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.services.common.QueryTask;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.UserService;
-import com.vmware.xenon.services.common.authn.AuthenticationRequest;
-import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
 
 
-public class VidmAuthenticationService extends StatelessService implements AuthenticationService {
+public class VidmAuthenticationService extends AuthenticationService {
 
     public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VIDM;
-
-    public static final String WWW_AUTHENTICATE_HEADER_NAME = "WWW-Authenticate";
-    public static final String WWW_AUTHENTICATE_HEADER_VALUE = "Basic realm=\"xenon\"";
-    public static final String AUTHORIZATION_HEADER_NAME = "Authorization";
 
     protected String hostName = VidmProperties.getHostName();
     protected String clientID = VidmProperties.getClientId();
@@ -55,29 +48,6 @@ public class VidmAuthenticationService extends StatelessService implements Authe
     protected String authToken ;
 
     @Override
-    public void authorizeRequest(Operation op) {
-        op.complete();
-    }
-
-    @Override
-    public void handlePost(Operation op) {
-        AuthenticationRequestType requestType = op.getBody(AuthenticationRequest.class).requestType;
-        // default to login for backward compatibility
-        if (requestType == null) {
-            requestType = AuthenticationRequestType.LOGIN;
-        }
-        switch (requestType) {
-        case LOGIN:
-            handleLogin(op);
-            break;
-        case LOGOUT:
-            handleLogout(op);
-            break;
-        default:
-            break;
-        }
-    }
-
     public void handleLogout(Operation op) {
         if (op.getAuthorizationContext() == null) {
             op.complete();
@@ -91,6 +61,7 @@ public class VidmAuthenticationService extends StatelessService implements Authe
         op.complete();
     }
 
+    @Override
     public void handleLogin(Operation op) {
         String authHeader = op.getRequestHeader(AUTHORIZATION_HEADER_NAME);
 
@@ -197,8 +168,7 @@ public class VidmAuthenticationService extends StatelessService implements Authe
                 .addRequestHeader(AUTHORIZATION_HEADER_NAME , "Basic " + authString)
                 .setCompletion((authOp ,authEx) -> {
                     if (authEx != null) {
-                        logWarning("Exception validating user credentials: %s",
-                                Utils.toString(authEx));
+                        logWarning("Exception validating user credentials");
                         parentOp.setBodyNoCloning(authOp.getBodyRaw()).fail(
                                 Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
                         return;
@@ -232,26 +202,23 @@ public class VidmAuthenticationService extends StatelessService implements Authe
         this.getHost().sendRequest(postRequest);
     }
 
-    private SuiteToken getSuiteTokenObject(String token) {
-        SuiteTokenConfiguration s = new SuiteTokenConfiguration();
-        s.setPublicKeyUrl(this.hostName + "/SAAS/API/1.0/REST/auth/token?attribute=publicKey");
-        s.setRevokeCheckUrl(this.hostName + "/SAAS/API/1.0/REST/auth/token?attribute=isRevoked");
-
-        SuiteToken suiteToken = null ;
-        try {
-            suiteToken = SuiteToken.decodeSuiteToken(token);
-        } catch (SuiteTokenException e) {
-            return null;
-        }
-        return suiteToken ;
-    }
-
     public boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
         VidmProperties.setVidmUserLink(userLink);
 
-        SuiteToken suiteToken = getSuiteTokenObject(token);
-        if (suiteToken ==  null) {
+        SuiteToken suiteToken ;
+        try {
+            suiteToken = VidmUtils.getSuiteTokenObject(token);
+        } catch (VidmTokenException e) {
+            log(Level.WARNING , "Error extracting the token data %s" , e.getMessage());
             return false;
+        }
+
+        /**
+         * If expirationTime is 0 , ie request coming from handleLogout. Set expiry time of the
+         * token to the current time indicating the token just got expired.
+         */
+        if (expirationTime == 0) {
+            suiteToken.setExpires(Utils.getNowMicrosUtc());
         }
 
         Claims.Builder builder = new Claims.Builder();

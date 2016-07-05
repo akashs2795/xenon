@@ -20,6 +20,8 @@ import java.util.logging.Level;
 
 import com.vmware.xenon.common.AuthorizationSetupHelper;
 import com.vmware.xenon.common.ServiceHost;
+import com.vmware.xenon.common.Utils;
+import com.vmware.xenon.services.common.ExampleService;
 import com.vmware.xenon.services.common.RootNamespaceService;
 
 public class VidmServiceHost extends ServiceHost {
@@ -40,6 +42,17 @@ public class VidmServiceHost extends ServiceHost {
          * The password of the adminUser
          */
         public String adminUserPassword;
+
+        /**
+         * The email address of a user that should be granted privileges just to example services
+         * that they own
+         */
+        public String exampleUser;
+
+        /**
+         * The password of the exampleUser
+         */
+        public String exampleUserPassword;
     }
 
     private VidmHostArguments args;
@@ -99,13 +112,25 @@ public class VidmServiceHost extends ServiceHost {
                 .setIsAdmin(true)
                 .start();
 
-        if (this.args.adminUser != null) {
-            AuthorizationSetupHelper.create()
-                    .setHost(this)
-                    .setUserEmail(this.args.adminUser)
-                    .setUserPassword(this.args.adminUserPassword)
-                    .setIsAdmin(true)
-                    .start();
+        if (this.args != null ) {
+
+            if (this.args.adminUser != null) {
+                AuthorizationSetupHelper.create()
+                        .setHost(this)
+                        .setUserEmail(this.args.adminUser)
+                        .setUserPassword(this.args.adminUserPassword)
+                        .setIsAdmin(true)
+                        .start();
+            }
+            if (this.args.exampleUser != null) {
+                AuthorizationSetupHelper.create()
+                        .setHost(this)
+                        .setUserEmail(this.args.exampleUser)
+                        .setUserPassword(this.args.exampleUserPassword)
+                        .setIsAdmin(false)
+                        .setDocumentKind(Utils.buildKind(ExampleService.ExampleServiceState.class))
+                        .start();
+            }
         }
 
         setAuthorizationContext(null);

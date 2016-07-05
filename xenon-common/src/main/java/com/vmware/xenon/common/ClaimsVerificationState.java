@@ -16,6 +16,11 @@ package com.vmware.xenon.common;
 import java.util.Set;
 
 public class ClaimsVerificationState extends ServiceDocument {
+    /**
+     * This service document is used when we request external authentication
+     * providers to provide claims data. The response from external auth providers
+     * will be a ClaimsVerificationState document
+     */
     public String issuer;
     public String subject;
     public Set<String> audience;
