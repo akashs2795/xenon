@@ -25,7 +25,7 @@ import com.vmware.xenon.services.common.ServiceUriPaths;
 
 public class VidmVerifierService extends VerifierService {
 
-    public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VERIFY_VIDM;
+    public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VERIFY + "/vidm";
 
     private final String hostName = VidmProperties.getHostName() ;
     private String userLink ;

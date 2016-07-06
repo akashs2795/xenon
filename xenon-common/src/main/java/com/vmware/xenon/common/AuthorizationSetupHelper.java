@@ -271,7 +271,6 @@ public class AuthorizationSetupHelper {
      * a set of chained completion handlers.
      */
     private void setupUser() {
-
         switch (this.currentStep) {
         case QUERY_USER:
             queryUser();
@@ -310,7 +309,6 @@ public class AuthorizationSetupHelper {
      * create it.
      */
     private void queryUser() {
-
         Query userQuery = Query.Builder.create()
                 .addFieldClause(ServiceDocument.FIELD_NAME_KIND,
                         Utils.buildKind(UserState.class))
@@ -355,7 +353,6 @@ public class AuthorizationSetupHelper {
      * the selfLink of the user service.
      */
     private void makeUser() {
-
         UserState user = new UserState();
         user.email = this.userEmail;
         if (this.userSelfLink != null) {
@@ -387,7 +384,6 @@ public class AuthorizationSetupHelper {
      * Make the credentials for the user.
      */
     private void makeCredentials() {
-
         AuthCredentialsServiceState auth = new AuthCredentialsServiceState();
         auth.userEmail = this.userEmail;
         auth.privateKey = this.userPassword;
@@ -587,7 +583,6 @@ public class AuthorizationSetupHelper {
      * When we complete the process, log the full details of the user
      */
     private void printUserDetails() {
-
         if (this.userEmail != null) {
             this.host.log(Level.INFO,
                     "Created user %s (%s) with credentials, user group (%s) "

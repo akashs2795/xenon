@@ -53,13 +53,13 @@ public class BasicAuthenticationService extends StatelessService {
             }
             BasicAuthenticationContext authContext = new BasicAuthenticationContext();
             authContext.userQuery = Query.Builder.create().addKindFieldClause(UserState.class)
-                    .addFieldClause(UserState.FIELD_NAME_EMAIL, userNameAndPassword[0])
-                    .build();
+            .addFieldClause(UserState.FIELD_NAME_EMAIL, userNameAndPassword[0])
+            .build();
 
             authContext.authQuery = Query.Builder.create().addKindFieldClause(AuthCredentialsServiceState.class)
-                    .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_EMAIL, userNameAndPassword[0])
-                    .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_PRIVATE_KEY, userNameAndPassword[1])
-                    .build();
+            .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_EMAIL, userNameAndPassword[0])
+            .addFieldClause(AuthCredentialsServiceState.FIELD_NAME_PRIVATE_KEY, userNameAndPassword[1])
+            .build();
             BasicAuthenticationUtils.handleLogin(this, op, authContext);
             break;
         case LOGOUT:
@@ -69,4 +69,10 @@ public class BasicAuthenticationService extends StatelessService {
             break;
         }
     }
+
+
+
+
+
+
 }

@@ -40,7 +40,7 @@ import com.vmware.xenon.services.common.UserService;
 
 public class VidmAuthenticationService extends AuthenticationService {
 
-    public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN_VIDM;
+    public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN + "/vidm";
 
     protected String hostName = VidmProperties.getHostName();
     protected String clientID = VidmProperties.getClientId();

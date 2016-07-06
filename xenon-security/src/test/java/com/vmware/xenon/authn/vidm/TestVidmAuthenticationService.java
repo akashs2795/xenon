@@ -204,7 +204,7 @@ public class TestVidmAuthenticationService extends VidmTestCase {
         this.host.send(Operation
                 .createPost(authServiceUri)
                 .setBody(new Object())
-                .addRequestHeader(Operation.TYPE_HEADER , VidmProperties.VIDM_AUTH_NAME)
+                .addRequestHeader(Operation.AUTH_TYPE_HEADER, VidmProperties.VIDM_AUTH_NAME)
                 .addRequestHeader(VidmAuthenticationService.AUTHORIZATION_HEADER_NAME, headerVal)
                 .setCompletion(
                         (o, e) -> {
@@ -266,7 +266,7 @@ public class TestVidmAuthenticationService extends VidmTestCase {
 //                .setBody(new Object())
 //                .forceRemote()
 //                .addRequestHeader(VidmAuthenticationService.AUTHORIZATION_HEADER_NAME, headerVal)
-//                .addRequestHeader(Operation.TYPE_HEADER , VidmProperties.VIDM_AUTH_NAME)
+//                .addRequestHeader(Operation.AUTH_TYPE_HEADER , VidmProperties.VIDM_AUTH_NAME)
 //                .setCompletion(
 //                        (o, e) -> {
 //                            if (e != null) {

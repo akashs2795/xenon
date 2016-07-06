@@ -93,7 +93,6 @@ public class ExampleServiceHost extends ServiceHost {
         // The args are null because many of the tests use this class (via VerificationHost)
         // without providing arguments.
         if (this.args != null) {
-
             if (this.args.adminUser != null) {
                 AuthorizationSetupHelper.create()
                         .setHost(this)
@@ -112,6 +111,7 @@ public class ExampleServiceHost extends ServiceHost {
                         .start();
             }
         }
+
         setAuthorizationContext(null);
 
         return this;

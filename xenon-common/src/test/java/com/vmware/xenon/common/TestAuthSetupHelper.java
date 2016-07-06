@@ -40,7 +40,6 @@ import com.vmware.xenon.services.common.ServiceHostManagementService;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.UserGroupService.UserGroupState;
 
-
 // Note that we can't use BasicReusableHostTestCase here because we need to enable
 // authorization on the host before it's started, and BasicReusableHostTestCase
 // doesn't have authorization enabled.

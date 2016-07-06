@@ -135,7 +135,6 @@ import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
 public class ServiceHost implements ServiceRequestSender {
     public static final String UI_DIRECTORY_NAME = "ui";
 
-
     public static class ServiceAlreadyStartedException extends IllegalStateException {
         private static final long serialVersionUID = -1444810129515584386L;
 
@@ -255,6 +254,7 @@ public class ServiceHost implements ServiceRequestSender {
          * the JAR file of the host
          */
         public Path resourceSandbox;
+
     }
 
     private static final LogFormatter LOG_FORMATTER = new LogFormatter();
@@ -3075,7 +3075,7 @@ public class ServiceHost implements ServiceRequestSender {
     }
 
     AuthorizationContext getAuthorizationContext(Operation op) {
-        String authType = op.getRequestHeader(Operation.TYPE_HEADER);
+        String authType = op.getRequestHeader(Operation.AUTH_TYPE_HEADER);
         String token = op.getRequestHeader(Operation.REQUEST_AUTH_TOKEN_HEADER);
         if (token == null) {
             Map<String, String> cookies = op.getCookies();
@@ -3107,8 +3107,8 @@ public class ServiceHost implements ServiceRequestSender {
             }
 
             if (claims == null) {
-                log(Level.INFO, "Request to %s has no claims found with given token",
-                        op.getUri().getPath());
+                log(Level.INFO, "Request to %s has no claims found with token: %s",
+                        op.getUri().getPath(), token);
                 return null;
             }
 
@@ -3124,6 +3124,7 @@ public class ServiceHost implements ServiceRequestSender {
             if (ctx != null) {
                 return ctx;
             }
+
             AuthorizationContext.Builder b = AuthorizationContext.Builder.create();
             b.setClaims(claims);
             b.setToken(token);
@@ -5089,6 +5090,7 @@ public class ServiceHost implements ServiceRequestSender {
             // No (valid) authorization context, fall back to guest context
             ctx = getGuestAuthorizationContext();
         }
+
         op.setAuthorizationContext(ctx);
     }
 
