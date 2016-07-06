@@ -2,6 +2,15 @@
 
 ## 0.9.0-SNAPSHOT
 
+* Add sample code for Bootstrap Service Tutorial.
+  https://github.com/vmware/xenon/wiki/Bootstrap-Service-Tutorial
+
+* Move VerificationHost#findUnixProcessInfoByXxx,killUnixProcess to SystemUtils class.
+  Referenced class(ProcessInfo) has moved to SystemUtils class as well.
+
+* Clear the authz cache maintained in ServiceHost on all nodes in a multi-node
+  deployment.
+
 * Add support for graph queries. The new GraphQueryTaskService, listening on
   /core/graph-queries enables multi stage queries that can traverse linked
   documents. Each stage uses the QueryTask specification, to select the documents
