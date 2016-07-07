@@ -45,7 +45,6 @@ public class VidmAuthenticationService extends AuthenticationService {
     protected String hostName = VidmProperties.getHostName();
     protected String clientID = VidmProperties.getClientId();
     protected String clientSecret = VidmProperties.getClientSecret();
-    protected String authToken ;
 
     @Override
     public void handleLogout(Operation op) {
@@ -53,8 +52,9 @@ public class VidmAuthenticationService extends AuthenticationService {
             op.complete();
             return;
         }
-        String userLink = op.getAuthorizationContext().getClaims().getSubject();
-        if (!associateAuthorizationContext(op, userLink, 0 , this.authToken)) {
+        String userLink = VidmProperties.getVidmUserLink();
+        String accessToken = op.getRequestHeader(Operation.REQUEST_AUTH_TOKEN_HEADER);
+        if (!associateAuthorizationContext(op, userLink, 0 , accessToken)) {
             op.setStatusCode(Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD).complete();
             return;
         }
@@ -128,6 +128,7 @@ public class VidmAuthenticationService extends AuthenticationService {
 
             // The user is valid; query the auth provider to check if the credentials match
             String userLink = rsp.results.documentLinks.get(0);
+            VidmProperties.setVidmUserLink(userLink);
             authenticate(parentOp, userLink, userName, password);
         };
 
@@ -182,7 +183,6 @@ public class VidmAuthenticationService extends AuthenticationService {
                             gson.fromJson(response, type));
 
                     String accessToken = responseMap.get("access_token");
-                    this.authToken = accessToken ;
                     long expiryTime = Integer.parseInt(responseMap.get("expires_in"));
 
                     if (accessToken == null) {
@@ -203,7 +203,6 @@ public class VidmAuthenticationService extends AuthenticationService {
     }
 
     public boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
-        VidmProperties.setVidmUserLink(userLink);
 
         SuiteToken suiteToken ;
         try {
