@@ -259,32 +259,32 @@ public class TestVidmAuthenticationService extends VidmTestCase {
                         }));
         this.host.testWait();
 
-//        // Finally, send a valid remote request, and validate the cookie & auth token
-//        this.host.testStart(1);
-//        this.host.send(Operation
-//                .createPost(authServiceUri)
-//                .setBody(new Object())
-//                .forceRemote()
-//                .addRequestHeader(VidmAuthenticationService.AUTHORIZATION_HEADER_NAME, headerVal)
-//                .addRequestHeader(Operation.AUTH_TYPE_HEADER , VidmProperties.VIDM_AUTH_NAME)
-//                .setCompletion(
-//                        (o, e) -> {
-//                            if (e != null) {
-//                                this.host.failIteration(e);
-//                                return;
-//                            }
-//                            if (o.getStatusCode() != Operation.STATUS_CODE_OK) {
-//                                this.host.failIteration(new IllegalStateException(
-//                                        "Invalid status code returned"));
-//                                return;
-//                            }
-//                            if (!validateAuthToken(o)) {
-//                                return;
-//                            }
-//                            this.host.completeIteration();
-//                        }));
-//        this.host.testWait();
-//
+        // Finally, send a valid remote request, and validate the cookie & auth token
+        this.host.testStart(1);
+        this.host.send(Operation
+                .createPost(authServiceUri)
+                .setBody(new Object())
+                .forceRemote()
+                .addRequestHeader(VidmAuthenticationService.AUTHORIZATION_HEADER_NAME, headerVal)
+                .addRequestHeader(Operation.AUTH_TYPE_HEADER , VidmProperties.VIDM_AUTH_NAME)
+                .setCompletion(
+                        (o, e) -> {
+                            if (e != null) {
+                                this.host.failIteration(e);
+                                return;
+                            }
+                            if (o.getStatusCode() != Operation.STATUS_CODE_OK) {
+                                this.host.failIteration(new IllegalStateException(
+                                        "Invalid status code returned"));
+                                return;
+                            }
+                            if (!validateAuthToken(o)) {
+                                return;
+                            }
+                            this.host.completeIteration();
+                        }));
+        this.host.testWait();
+
     }
 
     @Test
