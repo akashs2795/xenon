@@ -165,12 +165,12 @@ public class TestVidmServiceHost extends VidmReusableHostTestCase {
             this.host.send(get);
             this.host.testWait();
 
-            if (numberUsers[0] == 3) {
+            if (numberUsers[0] == 2) {
                 break;
             }
             Thread.sleep(250);
         }
-        assertTrue(numberUsers[0] == 3);
+        assertTrue(numberUsers[0] == 2);
     }
 
     /**

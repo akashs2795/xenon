@@ -95,6 +95,9 @@ public class VidmServiceHost extends ServiceHost {
         super.addPrivilegedService(VidmAuthenticationService.class);
         super.addPrivilegedService(VidmVerifierService.class);
 
+        // Start the configuration service factory
+        super.startFactory(new VidmConfigurationService());
+
         // Start the vIDM Authentication ans Verification Service
         super.startService(new VidmAuthenticationService());
         super.startService(new VidmVerifierService());
@@ -102,15 +105,6 @@ public class VidmServiceHost extends ServiceHost {
         // Start the root namespace factory: this will respond to the root URI (/) and list all
         // the factory services.
         super.startService(new RootNamespaceService());
-
-        //Create a vIDM user in xenon which will be used as a document instance for
-        //all users belonging to vIDM
-        AuthorizationSetupHelper.create()
-                .setHost(this)
-                .setUserEmail(VidmProperties.VIDM_USER)
-                .setUserPassword(VidmProperties.VIDM_USER_PASSWORD)
-                .setIsAdmin(true)
-                .start();
 
         if (this.args != null ) {
 

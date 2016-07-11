@@ -13,6 +13,7 @@
 
 package com.vmware.xenon.authn.vidm;
 
+import java.io.StringReader;
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Type;
 import java.net.URI;
@@ -23,8 +24,10 @@ import java.util.Map;
 import java.util.logging.Level;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
 
+import com.google.gson.stream.JsonReader;
 import com.vmware.horizon.common.api.token.SuiteToken;
 import com.vmware.xenon.authn.common.AuthenticationService;
 import com.vmware.xenon.authn.vidm.VidmUtils.VidmTokenException;
@@ -32,11 +35,14 @@ import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.Operation.AuthorizationContext;
 import com.vmware.xenon.common.ServiceDocument;
+import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.services.common.QueryTask;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.UserService;
+import jdk.nashorn.internal.parser.JSONParser;
 
+import javax.sound.midi.SysexMessage;
 
 public class VidmAuthenticationService extends AuthenticationService {
 
@@ -52,7 +58,7 @@ public class VidmAuthenticationService extends AuthenticationService {
             op.complete();
             return;
         }
-        String userLink = VidmProperties.getVidmUserLink();
+        String userLink = op.getAuthorizationContext().getClaims().getSubject();
         String accessToken = op.getRequestHeader(Operation.REQUEST_AUTH_TOKEN_HEADER);
         if (!associateAuthorizationContext(op, userLink, 0 , accessToken)) {
             op.setStatusCode(Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD).complete();
@@ -92,55 +98,10 @@ public class VidmAuthenticationService extends AuthenticationService {
         }
 
         // validate that the user is valid
-        queryUserService(op, userNameAndPassword[0], userNameAndPassword[1]);
+        authenticate(op, userNameAndPassword[0], userNameAndPassword[1]);
     }
 
-    public void queryUserService(Operation parentOp, String userName, String password) {
-        QueryTask q = new QueryTask();
-        q.querySpec = new QueryTask.QuerySpecification();
-
-        String kind = Utils.buildKind(UserService.UserState.class);
-        QueryTask.Query kindClause = new QueryTask.Query()
-                .setTermPropertyName(ServiceDocument.FIELD_NAME_KIND)
-                .setTermMatchValue(kind);
-        q.querySpec.query.addBooleanClause(kindClause);
-
-        QueryTask.Query emailClause = new QueryTask.Query()
-                .setTermPropertyName(UserService.UserState.FIELD_NAME_EMAIL)
-                .setTermMatchValue(VidmProperties.VIDM_USER);
-        emailClause.occurance = QueryTask.Query.Occurance.MUST_OCCUR;
-
-        q.querySpec.query.addBooleanClause(emailClause);
-        q.taskInfo.isDirect = true;
-
-        Operation.CompletionHandler userServiceCompletion = (o, ex) -> {
-            if (ex != null) {
-                logWarning("Exception validating user: %s", Utils.toString(ex));
-                parentOp.setBodyNoCloning(o.getBodyRaw()).fail(o.getStatusCode());
-                return;
-            }
-
-            QueryTask rsp = o.getBody(QueryTask.class);
-            if (rsp.results.documentLinks.isEmpty()) {
-                parentOp.fail(Operation.STATUS_CODE_FORBIDDEN);
-                return;
-            }
-
-            // The user is valid; query the auth provider to check if the credentials match
-            String userLink = rsp.results.documentLinks.get(0);
-            VidmProperties.setVidmUserLink(userLink);
-            authenticate(parentOp, userLink, userName, password);
-        };
-
-        Operation queryOp = Operation
-                .createPost(this, ServiceUriPaths.CORE_QUERY_TASKS)
-                .setBody(q)
-                .setCompletion(userServiceCompletion);
-        setAuthorizationContext(queryOp, getSystemAuthorizationContext());
-        sendRequest(queryOp);
-    }
-
-    public void authenticate(Operation op , String userLink , String userName, String password) {
+    public void authenticate(Operation op , String userName, String password) {
         if (this.hostName == null || this.clientID == null || this.clientSecret == null) {
             logWarning("Valid vIDM configuration not found ");
             op.setStatusCode(Operation.STATUS_CODE_NOT_FOUND).complete();
@@ -159,18 +120,15 @@ public class VidmAuthenticationService extends AuthenticationService {
             encodingException.printStackTrace();
         }
         String authString = e.encodeToString(authCodeBytes);
-        createPost(op , userLink , this.hostName + targetURL , authString);
-    }
 
-    public void createPost(Operation parentOp , String userLink , String targetUrl , String authString) {
-        Operation postRequest = Operation.createPost(URI.create(targetUrl))
+        Operation postRequest = Operation.createPost(URI.create(this.hostName + targetURL))
                 .setReferer(this.getUri())
                 .setBody(new Object())
                 .addRequestHeader(AUTHORIZATION_HEADER_NAME , "Basic " + authString)
                 .setCompletion((authOp ,authEx) -> {
                     if (authEx != null) {
                         logWarning("Exception validating user credentials");
-                        parentOp.setBodyNoCloning(authOp.getBodyRaw()).fail(
+                        op.setBodyNoCloning(authOp.getBodyRaw()).fail(
                                 Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
                         return;
                     }
@@ -187,19 +145,131 @@ public class VidmAuthenticationService extends AuthenticationService {
 
                     if (accessToken == null) {
                         logWarning("Exception validating user credentials");
-                        parentOp.fail(Operation.STATUS_CODE_FORBIDDEN);
+                        op.fail(Operation.STATUS_CODE_FORBIDDEN);
                         return;
                     }
 
-                    if (!associateAuthorizationContext(parentOp, userLink,
-                            (Utils.getNowMicrosUtc() + (expiryTime * 1000000)) , accessToken)) {
-                        parentOp.fail(Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
-                        return;
-                    }
-
-                    parentOp.complete();
+                    createUserPresence(op , userName , accessToken , expiryTime);
                 });
         this.getHost().sendRequest(postRequest);
+    }
+
+    public void createUserPresence(Operation parentOp, String userName, String token,
+            long expiryTime) {
+        QueryTask q = new QueryTask();
+        q.querySpec = new QueryTask.QuerySpecification();
+
+        String kind = Utils.buildKind(VidmUserService.VidmUserState.class);
+        QueryTask.Query kindClause = new QueryTask.Query()
+                .setTermPropertyName(ServiceDocument.FIELD_NAME_KIND)
+                .setTermMatchValue(kind);
+        q.querySpec.query.addBooleanClause(kindClause);
+
+        QueryTask.Query userNameClause = new QueryTask.Query()
+                .setTermPropertyName(VidmUserService.VidmUserState.FIELD_NAME_USERNAME)
+                .setTermMatchValue(userName);
+        userNameClause.occurance = QueryTask.Query.Occurance.MUST_OCCUR;
+
+        q.querySpec.query.addBooleanClause(userNameClause);
+        q.taskInfo.isDirect = true;
+
+        Operation.CompletionHandler userServiceCompletion = (o, ex) -> {
+            if (ex != null) {
+                logWarning("Exception validating user: %s", Utils.toString(ex));
+                parentOp.setBodyNoCloning(o.getBodyRaw()).fail(o.getStatusCode());
+                return;
+            }
+
+            QueryTask rsp = o.getBody(QueryTask.class);
+            if (rsp.results.documentLinks.isEmpty()) {
+                logInfo("Creating a presence for User");
+
+                String targetURL = "/SAAS/jersey/manager/api/scim/Me";
+
+                Operation getUserInfoRequest = Operation.createGet(URI.create(this.hostName +
+                        targetURL))
+                        .setReferer(this.getUri())
+                        .setBody(new Object())
+                        .addRequestHeader(AUTHORIZATION_HEADER_NAME , "HZN " + token)
+                        .setCompletion((authOp ,authEx) -> {
+                            if (authEx != null) {
+                                System.out.println("Found the error");
+                                logWarning("Exception validating user credentials");
+                                parentOp.setBodyNoCloning(authOp.getBodyRaw()).fail(
+                                        Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
+                                return;
+                            }
+
+                            String response = authOp.getBody(String.class);
+                            System.out.println("response : " + response);
+
+                            JsonReader reader = new JsonReader(new StringReader(response));
+                            JsonObject json = reader.
+                            json.
+                            String email = responseMap.get("emails");
+                            VidmUserService.VidmUserState state = new VidmUserService.
+                                    VidmUserState();
+                            state.userName = userName;
+                            state.email = email;
+                            Operation createUserRequest = Operation.createPost(
+                                    UriUtils.buildUri(this.getHost(), VidmUserService.FACTORY_LINK))
+                                    .setReferer(this.getUri())
+                                    .setBody(state)
+                                    .setCompletion((opp ,exx) -> {
+                                        if (opp != null) {
+                                            logWarning("Exception validating user credentials");
+                                            parentOp.setBodyNoCloning(authOp.getBodyRaw()).fail(
+                                                    Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
+                                            return;
+                                        }
+
+                                        String userDetailsResponse = opp.getBody(String.class);
+
+                                        Gson userDetailsGson = new Gson();
+                                        Type userDetailsType = new TypeToken<Map<String,
+                                                String>>() {}.getType();
+                                        HashMap<String, String> userDetailsResponseMap =
+                                                new HashMap<String, String>(
+                                                        userDetailsGson.fromJson(response,
+                                                                userDetailsType));
+
+                                        String userLink = userDetailsResponseMap
+                                                .get("documentSelfLink");
+                                        if (!associateAuthorizationContext(parentOp, userLink,
+                                                (Utils.getNowMicrosUtc() + (expiryTime * 1000000))
+                                                , token)) {
+                                            parentOp.fail(
+                                                    Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
+                                            return;
+                                        }
+
+                                        parentOp.complete();
+                                    });
+                            this.getHost().sendRequest(createUserRequest);
+
+                        });
+                this.getHost().sendRequest(getUserInfoRequest);
+            }
+            else {
+                //The user document already exists. Use this as the selfLink
+                logInfo("User Document already present in xenon");
+                String userLink = rsp.results.documentLinks.get(0);
+                if (!associateAuthorizationContext(parentOp, userLink,
+                        (Utils.getNowMicrosUtc() + (expiryTime * 1000000)), token)) {
+                    parentOp.fail(Operation.STATUS_CODE_SERVER_FAILURE_THRESHOLD);
+                    return;
+                }
+
+                parentOp.complete();
+            }
+        };
+
+        Operation queryOp = Operation
+                .createPost(this, ServiceUriPaths.CORE_QUERY_TASKS)
+                .setBody(q)
+                .setCompletion(userServiceCompletion);
+        setAuthorizationContext(queryOp, getSystemAuthorizationContext());
+        sendRequest(queryOp);
     }
 
     public boolean associateAuthorizationContext(Operation op, String userLink, long expirationTime  ,String token) {
@@ -239,6 +309,7 @@ public class VidmAuthenticationService extends AuthenticationService {
 
         // Associate resulting authorization context with operation.
         setAuthorizationContext(op, ab.getResult());
+
         return true;
     }
 }

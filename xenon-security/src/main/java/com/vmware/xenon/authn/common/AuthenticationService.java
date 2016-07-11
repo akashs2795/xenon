@@ -30,7 +30,8 @@ public abstract class AuthenticationService extends StatelessService{
 
     @Override
     public void handlePost(Operation op) {
-        AuthenticationRequest.AuthenticationRequestType requestType = op.getBody(AuthenticationRequest.class).requestType;
+        AuthenticationRequest.AuthenticationRequestType requestType =
+                op.getBody(AuthenticationRequest.class).requestType;
         // default to login for backward compatibility
         if (requestType == null) {
             requestType = AuthenticationRequest.AuthenticationRequestType.LOGIN;
@@ -75,7 +76,8 @@ public abstract class AuthenticationService extends StatelessService{
      * @param userName
      * @param password
      */
-    public abstract void queryUserService(Operation parentOp, String userName, String password);
+    public abstract void createUserPresence(Operation parentOp, String userName, String token,
+            long expirationTime);
 
     /**
      * Authenticate function is responsible for communicating with the auth provider and
@@ -89,7 +91,7 @@ public abstract class AuthenticationService extends StatelessService{
      * @param userName
      * @param password
      */
-    public abstract void authenticate(Operation parentOp, String userLink, String userName,
+    public abstract void authenticate(Operation parentOp, String userName,
             String password);
 
     /**

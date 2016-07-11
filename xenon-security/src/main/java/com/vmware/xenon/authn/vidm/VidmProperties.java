@@ -17,12 +17,9 @@ public class VidmProperties {
     public static final String VIDM_AUTH_NAME = "Vidm";
     public static final String VIDM_AUTH_SEPARATOR = " ";
     public static final String VIDM_AUTH_USER_SEPARATOR = ":";
-    public static final String VIDM_USER = "vidm@localhost" ;
-    public static final String VIDM_USER_PASSWORD = "vidmUserPassword" ;
     private static String HOST_NAME ;
     private static String CLIENT_ID ;
     private static String CLIENT_SECRET ;
-    private static String VIDM_USER_LINK ;
 
     public static void setHostName(String hostName) {
         VidmProperties.HOST_NAME = hostName ;
@@ -34,14 +31,6 @@ public class VidmProperties {
 
     public static void setClientSecret(String clientSecret) {
         VidmProperties.CLIENT_SECRET = clientSecret ;
-    }
-
-    public static void setVidmUserLink(String vidmUserLink) {
-        VidmProperties.VIDM_USER_LINK = vidmUserLink ;
-    }
-
-    public static String getVidmUserLink() {
-        return VidmProperties.VIDM_USER_LINK ;
     }
 
     public static String getHostName() {

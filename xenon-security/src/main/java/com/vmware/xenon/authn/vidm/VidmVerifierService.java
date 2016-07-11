@@ -33,7 +33,7 @@ public class VidmVerifierService extends VerifierService {
     public ClaimsVerificationState verify(String token) throws VidmTokenException,
             GeneralSecurityException {
 
-        this.userLink = VidmProperties.getVidmUserLink();
+        this.userLink = null ;
 
         if (this.hostName == null || this.userLink == null) {
             throw new GeneralSecurityException("Invalid vIDM configuration details");
