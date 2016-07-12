@@ -20,7 +20,6 @@ import com.vmware.horizon.common.api.token.SuiteToken;
 import com.vmware.xenon.authn.common.VerifierService;
 import com.vmware.xenon.authn.vidm.VidmUtils.VidmTokenException;
 import com.vmware.xenon.common.Claims;
-import com.vmware.xenon.common.ClaimsVerificationState;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 
 public class VidmVerifierService extends VerifierService {
@@ -30,7 +29,7 @@ public class VidmVerifierService extends VerifierService {
     private final String hostName = VidmProperties.getHostName() ;
     private String userLink ;
 
-    public ClaimsVerificationState verify(String token) throws VidmTokenException,
+    public Claims verify(String token) throws VidmTokenException,
             GeneralSecurityException {
 
         this.userLink = VidmProperties.getVidmUserLink();
@@ -51,17 +50,7 @@ public class VidmVerifierService extends VerifierService {
 
         Claims claims = builder.getResult();
 
-        ClaimsVerificationState claimsVerificationState = new ClaimsVerificationState();
-
-        claimsVerificationState.audience = new HashSet<>(claims.getAudience());
-        claimsVerificationState.expirationTime = claims.getExpirationTime();
-        claimsVerificationState.issuedAt = claims.getIssuedAt();
-        claimsVerificationState.issuer = claims.getIssuer();
-        claimsVerificationState.jwtId = claims.getJwtId();
-        claimsVerificationState.notBefore = claims.getNotBefore();
-        claimsVerificationState.subject = claims.getSubject();
-
-        return claimsVerificationState;
+        return claims;
     }
 }
 

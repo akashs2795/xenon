@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.authn.vidm;
+package com.vmware.xenon.authn.common;
 
 import java.util.concurrent.TimeUnit;
 
@@ -31,13 +31,13 @@ import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.test.TestContext;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 
-public class VidmReusableHostTestCase {
+public class AuthenticationReusableHostTestCase {
 
     private static final int MAINTENANCE_INTERVAL_MILLIS = 250;
 
-    private static VidmVerificationHost HOST;
+    private static AuthenticationVerificationHost HOST;
 
-    protected VidmVerificationHost host;
+    protected AuthenticationVerificationHost host;
 
     public boolean enableAuth = false;
 
@@ -51,7 +51,7 @@ public class VidmReusableHostTestCase {
     }
 
     private static void startHost(boolean enableAuth) throws Exception {
-        HOST = VidmVerificationHost.create(0);
+        HOST = AuthenticationVerificationHost.create(0);
         HOST.setMaintenanceIntervalMicros(TimeUnit.MILLISECONDS
                 .toMicros(MAINTENANCE_INTERVAL_MILLIS));
         CommandLineArgumentParser.parseFromProperties(HOST);

@@ -11,27 +11,47 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.authn.vidm;
+package com.vmware.xenon.authn.common;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.Properties;
 import java.util.logging.Level;
 
+import com.vmware.xenon.authn.vidm.VidmProperties;
 import com.vmware.xenon.common.AuthorizationSetupHelper;
 import com.vmware.xenon.common.ServiceHost;
 import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.services.common.ExampleService;
 import com.vmware.xenon.services.common.RootNamespaceService;
 
-public class VidmServiceHost extends ServiceHost {
+public class AuthenticationServiceHost extends ServiceHost {
 
-    public static class VidmHostArguments extends Arguments {
+    private HashMap<String , Path> authProviders;
+    private String[] providers ;
+    private int providerCount ;
+
+    public static final String AUTHENTICATION_CLASS_NAME = "AuthenticationService" ;
+    public static final String VERIFICATION_CLASS_NAME = "VerifierService" ;
+    public static final String PACKAGE_NAME = "com.vmware.xenon.authn";
+
+    public static class AuthenticationHostArguments extends Arguments {
+        /**
+         * Comma separated list of one or more providers
+         * e.g --providers=vidm,google,facebook
+         */
+        public String[] providers;
 
         /**
-         * Used to read the vIDM properties file as an input when xenon is started
+         * Comma separated list of one or more properties file corresponding to providers
+         * NOTE : Order of providers and properties file must remain same
+         * e.g --providers=vidm,google --providerProperties=**path-to-vidm-prop**,
+         * **path-to-google-prop**
          */
-        public Path vidmProperties;
+        public String[] providerProperties;
+
 
         /**
          * The email address of a user that should be granted "admin" privileges to all services
@@ -55,10 +75,10 @@ public class VidmServiceHost extends ServiceHost {
         public String exampleUserPassword;
     }
 
-    private VidmHostArguments args;
+    private AuthenticationHostArguments args;
 
     public static void main(String[] args) throws Throwable {
-        VidmServiceHost h = new VidmServiceHost();
+        AuthenticationServiceHost h = new AuthenticationServiceHost();
         h.initialize(args);
         h.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -70,11 +90,24 @@ public class VidmServiceHost extends ServiceHost {
 
     @Override
     public ServiceHost initialize(String[] args) throws Throwable {
-        this.args = new VidmHostArguments();
+        this.args = new AuthenticationHostArguments();
         super.initialize(args, this.args);
-        if (this.args.vidmProperties != null) {
+        this.providers = this.args.providers;
+
+        this.authProviders = new HashMap<String, Path>();
+
+        int count;
+        if (this.args.providers != null) {
+            this.providerCount = this.args.providers.length;
+            for (count = 0 ; count < this.providerCount ; count++ ) {
+                this.authProviders.put(this.args.providers[count].toLowerCase(),
+                        Paths.get(this.args.providerProperties[count]));
+            }
+        }
+
+        if (this.authProviders.containsKey("vidm")) {
             Properties prop = new Properties();
-            prop.load(Files.newInputStream(this.args.vidmProperties));
+            prop.load(Files.newInputStream(this.authProviders.get("vidm")));
 
             VidmProperties.setClientId(prop.getProperty("clientID"));
             VidmProperties.setClientSecret(prop.getProperty("clientSecret"));
@@ -84,6 +117,7 @@ public class VidmServiceHost extends ServiceHost {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public ServiceHost start() throws Throwable {
         super.start();
 
@@ -91,13 +125,30 @@ public class VidmServiceHost extends ServiceHost {
 
         setAuthorizationContext(this.getSystemAuthorizationContext());
 
-        //Add privileges for both authentication and verification service
-        super.addPrivilegedService(VidmAuthenticationService.class);
-        super.addPrivilegedService(VidmVerifierService.class);
+        int count;
+        for (count = 0 ; count < this.providerCount ; count++ ) {
 
-        // Start the vIDM Authentication ans Verification Service
-        super.startService(new VidmAuthenticationService());
-        super.startService(new VidmVerifierService());
+            String authenticationClassName = AuthenticationServiceHost.PACKAGE_NAME +
+                    "." + this.providers[count].toLowerCase() + "." + this.providers[count] +
+                    AuthenticationServiceHost.AUTHENTICATION_CLASS_NAME ;
+            String verificationClassName = AuthenticationServiceHost.PACKAGE_NAME +
+                    "." + this.providers[count].toLowerCase() + "." + this.providers[count] +
+                    AuthenticationServiceHost.VERIFICATION_CLASS_NAME ;
+
+            Class<? extends AuthenticationService> authenticationClass =
+                    (Class<? extends AuthenticationService>)Class.forName(authenticationClassName);
+            Class<? extends VerifierService> verificationClass =
+                    (Class<? extends VerifierService>)Class.forName(verificationClassName);
+
+            //Add privileges for both authentication and verification service
+            super.addPrivilegedService(authenticationClass);
+            super.addPrivilegedService(verificationClass);
+
+            // Start the Authentication ans Verification Service
+            super.startService(authenticationClass.newInstance());
+            super.startService(verificationClass.newInstance());
+
+        }
 
         // Start the root namespace factory: this will respond to the root URI (/) and list all
         // the factory services.

@@ -510,7 +510,7 @@ public class ServiceHost implements ServiceRequestSender {
     private AuthorizationContext systemAuthorizationContext;
     private AuthorizationContext guestAuthorizationContext;
 
-    protected ClaimsVerificationState externalClaimsData ;
+    protected Claims externalClaimsData ;
 
     protected ServiceHost() {
         this.state = new ServiceHostState();
@@ -3029,7 +3029,7 @@ public class ServiceHost implements ServiceRequestSender {
                         verificationComplete.countDown();
                         return;
                     }
-                    this.externalClaimsData = authOp.getBody(ClaimsVerificationState.class);
+                    this.externalClaimsData = authOp.getBody(Claims.class);
                     verificationComplete.countDown();
                     return ;
                 });
@@ -3051,27 +3051,9 @@ public class ServiceHost implements ServiceRequestSender {
      * @return Claims
      */
     public Claims externalProviderVerification(String authToken, String authProvider) {
-
-        Claims claims = null ;
         this.externalClaimsData = null ;
-
         doVerificationSynchronously(authToken , authProvider);
-
-        if (this.externalClaimsData == null) {
-            return claims;
-        }
-
-        Claims.Builder builder = new Claims.Builder();
-        builder.setAudience(this.externalClaimsData.audience);
-        builder.setExpirationTime(this.externalClaimsData.expirationTime);
-        builder.setIssuedAt(this.externalClaimsData.issuedAt);
-        builder.setIssuer(this.externalClaimsData.issuer);
-        builder.setJwtId(this.externalClaimsData.jwtId);
-        builder.setNotBefore(this.externalClaimsData.notBefore);
-        builder.setSubject(this.externalClaimsData.subject);
-
-        claims = builder.getResult();
-        return claims;
+        return this.externalClaimsData;
     }
 
     AuthorizationContext getAuthorizationContext(Operation op) {

@@ -11,12 +11,11 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.authn.vidm;
+package com.vmware.xenon.authn.common;
 
 import static org.junit.Assert.assertEquals;
 
 import java.net.URI;
-import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.util.Arrays;
 import java.util.Date;
@@ -49,7 +48,7 @@ import com.vmware.xenon.services.common.NodeState;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.TaskService;
 
-public class VidmVerificationHost extends VidmServiceHost {
+public class AuthenticationVerificationHost extends AuthenticationServiceHost {
 
     private static final String VIDM_CONFIG_TEST_FILE = "C:/Users/srivastavaakash/Desktop/configuration.properties";
 
@@ -69,6 +68,10 @@ public class VidmVerificationHost extends VidmServiceHost {
 
     private String lastTestName;
 
+    private static final String providers = "Vidm";
+
+    private static final String providerProperties = "C:/Users/srivastavaakash/Desktop/configuration.properties";
+
     /**
      * Command line argument indicating this is a stress test
      */
@@ -85,26 +88,25 @@ public class VidmVerificationHost extends VidmServiceHost {
 
     private boolean isSingleton;
 
-    public static VidmVerificationHost create() {
-        return new VidmVerificationHost();
+    public static AuthenticationVerificationHost create() {
+        return new AuthenticationVerificationHost();
     }
 
-    public static VidmVerificationHost create(Integer port) throws Exception {
-        VidmHostArguments args = buildDefaultVidmHostArguments(port);
-        return initialize(new VidmVerificationHost(), args);
+    public static AuthenticationVerificationHost create(Integer port) throws Exception {
+        AuthenticationHostArguments args = buildDefaultAuthenticationHostArguments(port);
+        return initialize(new AuthenticationVerificationHost(), args);
     }
 
-    public static VidmHostArguments buildDefaultVidmHostArguments(Integer port) {
-        VidmHostArguments args = new VidmHostArguments();
+    public static AuthenticationHostArguments buildDefaultAuthenticationHostArguments(Integer port) {
+        AuthenticationHostArguments args = new AuthenticationHostArguments();
         args.id = "host-" + hostNumber.incrementAndGet();
         args.port = port;
         args.sandbox = null;
         args.bindAddress = ServiceHost.LOOPBACK_ADDRESS;
-        args.vidmProperties = Paths.get(VIDM_CONFIG_TEST_FILE);
         return args;
     }
 
-    public static VidmVerificationHost initialize(VidmVerificationHost h, VidmHostArguments args)
+    public static AuthenticationVerificationHost initialize(AuthenticationVerificationHost h, AuthenticationHostArguments args)
             throws Exception {
         if (args.sandbox == null) {
             h.setTemporaryFolder(new TemporaryFolder());
@@ -120,14 +122,15 @@ public class VidmVerificationHost extends VidmServiceHost {
         return h;
     }
 
-    public static String[] convertFromArguments(VidmHostArguments args) {
+    public static String[] convertFromArguments(AuthenticationHostArguments args) {
         String[] hostArgs = {
                 "--sandbox="
                         + args.sandbox,
                 "--port=" + args.port,
                 "--bindAddress=" + args.bindAddress,
                 "--isAuthorizationEnabled=" + Boolean.TRUE.toString(),
-                "--vidmProperties=" + args.vidmProperties,
+                "--providers=" + providers,
+                "--providerProperties=" + providerProperties,
         };
         return hostArgs;
     }
@@ -396,7 +399,7 @@ public class VidmVerificationHost extends VidmServiceHost {
 
     private Map<String, NodeState> peerHostIdToNodeState = new ConcurrentHashMap<>();
     private Map<URI, URI> peerNodeGroups = new ConcurrentHashMap<>();
-    private Map<URI, VidmVerificationHost> localPeerHosts = new ConcurrentHashMap<>();
+    private Map<URI, AuthenticationVerificationHost> localPeerHosts = new ConcurrentHashMap<>();
 
     public Date getTestExpiration() {
         long duration = this.timeoutSeconds + this.testDurationSeconds;
@@ -416,7 +419,7 @@ public class VidmVerificationHost extends VidmServiceHost {
     }
 
     public void tearDownInProcessPeers() {
-        for (VidmVerificationHost h : this.localPeerHosts.values()) {
+        for (AuthenticationVerificationHost h : this.localPeerHosts.values()) {
             if (h == null) {
                 continue;
             }
@@ -424,7 +427,7 @@ public class VidmVerificationHost extends VidmServiceHost {
         }
     }
 
-    public void stopHost(VidmVerificationHost host) {
+    public void stopHost(AuthenticationVerificationHost host) {
         log("Stopping host %s (%s)", host.getUri(), host.getId());
         host.tearDown();
         this.peerHostIdToNodeState.remove(host.getId());

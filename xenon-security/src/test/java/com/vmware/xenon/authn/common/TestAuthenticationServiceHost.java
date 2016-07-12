@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.authn.vidm;
+package com.vmware.xenon.authn.common;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -33,11 +33,12 @@ import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
 
-public class TestVidmServiceHost extends VidmReusableHostTestCase {
+public class TestAuthenticationServiceHost extends AuthenticationReusableHostTestCase {
 
     private static final String adminUser = "admin@localhost";
     private static final String exampleUser = "example@localhost";
-    private static final String vidmProperties = "C:/Users/srivastavaakash/Desktop/configuration.properties";
+    private static final String providers = "Vidm";
+    private static final String providerProperties = "C:/Users/srivastavaakash/Desktop/configuration.properties";
 
     /**
      * Verify that the example service host creates users as expected.
@@ -48,7 +49,7 @@ public class TestVidmServiceHost extends VidmReusableHostTestCase {
      */
     @Test
     public void createUsers() throws Throwable {
-        VidmServiceHost h = new VidmServiceHost();
+        AuthenticationServiceHost h = new AuthenticationServiceHost();
         TemporaryFolder tmpFolder = new TemporaryFolder();
         tmpFolder.create();
         try {
@@ -64,7 +65,8 @@ public class TestVidmServiceHost extends VidmReusableHostTestCase {
                     "--adminUserPassword=" + adminUser,
                     "--exampleUser=" + exampleUser,
                     "--exampleUserPassword=" + exampleUser,
-                    "--vidmProperties=" + vidmProperties,
+                    "--providers=" + providers,
+                    "--providerProperties=" + providerProperties,
             };
             h.initialize(args);
             h.setMaintenanceIntervalMicros(TimeUnit.MILLISECONDS.toMicros(100));

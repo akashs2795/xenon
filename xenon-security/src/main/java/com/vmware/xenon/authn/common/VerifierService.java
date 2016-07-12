@@ -15,7 +15,7 @@ package com.vmware.xenon.authn.common;
 
 import java.util.logging.Level;
 
-import com.vmware.xenon.common.ClaimsVerificationState;
+import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.StatelessService;
 
@@ -38,16 +38,16 @@ public abstract class VerifierService extends StatelessService{
      */
     public void handleVerification(Operation parentOp) {
         String token = parentOp.getRequestHeader("token");
-        ClaimsVerificationState claimsDocument;
+        Claims claims;
         try {
-            claimsDocument = verify(token);
+            claims = verify(token);
         } catch (Exception e) {
             log(Level.WARNING , "Exception while verifying the token : %s" , e.getMessage());
             parentOp.fail(Operation.STATUS_CODE_NOT_FOUND);
             return ;
         }
         parentOp.setStatusCode(Operation.STATUS_CODE_OK);
-        parentOp.setBodyNoCloning(claimsDocument).complete();
+        parentOp.setBodyNoCloning(claims).complete();
         return ;
     }
 
@@ -58,5 +58,5 @@ public abstract class VerifierService extends StatelessService{
      * @return ClaimsVerificationState
      * @throws Exception
      */
-    public abstract ClaimsVerificationState verify(String token) throws Exception ;
+    public abstract Claims verify(String token) throws Exception ;
 }

@@ -73,7 +73,7 @@
                     </descriptorRefs>
                     <archive>
                         <manifest>
-                            <mainClass>com.vmware.xenon.authn.vidm.VidmServiceHost</mainClass>
+                            <mainClass>com.vmware.xenon.authn.common.AuthenticationServiceHost</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

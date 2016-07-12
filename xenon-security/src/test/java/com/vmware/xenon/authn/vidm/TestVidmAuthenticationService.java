@@ -13,16 +13,18 @@
 
 package com.vmware.xenon.authn.vidm;
 
+import static org.junit.Assert.assertEquals;
+
 import java.net.URI;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-
 import org.junit.Before;
 import org.junit.Test;
 
+import com.vmware.xenon.authn.common.AuthenticationTestCase;
+import com.vmware.xenon.authn.common.AuthenticationVerificationHost;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.http.netty.CookieJar;
@@ -32,7 +34,7 @@ import com.vmware.xenon.services.common.authn.AuthenticationConstants;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.AuthenticationRequest.AuthenticationRequestType;
 
-public class TestVidmAuthenticationService extends VidmTestCase {
+public class TestVidmAuthenticationService extends AuthenticationTestCase {
     private static final String USER = "admin";
     private static final String INVALID_USER = "janedoe@doe.com";
     private static final String PASSWORD = "vmware";
@@ -44,7 +46,7 @@ public class TestVidmAuthenticationService extends VidmTestCase {
     private String credentialsServiceStateSelfLink;
 
     @Override
-    public void beforeHostStart(VidmVerificationHost h) {
+    public void beforeHostStart(AuthenticationVerificationHost h) {
         h.setAuthorizationEnabled(true);
     }
 

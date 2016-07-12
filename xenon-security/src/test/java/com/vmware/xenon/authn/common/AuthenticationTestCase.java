@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.authn.vidm;
+package com.vmware.xenon.authn.common;
 
 import org.junit.Rule;
 import org.junit.rules.ExternalResource;
@@ -24,7 +24,7 @@ import com.vmware.xenon.common.CommandLineArgumentParser;
 import com.vmware.xenon.common.Operation.CompletionHandler;
 
 /**
- * VidmTestCase creates and starts a VerificationHost on a random port, using
+ * AuthenticationTestCase creates and starts a VerificationHost on a random port, using
  * a temporary directory for its storage sandbox.
  *
  * The implementation uses jUnit's @Rule annotations which means that subclasses
@@ -37,51 +37,51 @@ import com.vmware.xenon.common.Operation.CompletionHandler;
  * multiple rules within a class is undefined. If order between these rules is
  * required, use {@link RuleChain}.
  */
-public class VidmTestCase {
-    public VidmVerificationHost host;
+public class AuthenticationTestCase {
+    public AuthenticationVerificationHost host;
     public boolean isStressTest ;
-    protected ExternalResource verificationHostRule = new ExternalResource() {
+    protected ExternalResource authenticationHostRule = new ExternalResource() {
         @Override
         protected void before() throws Throwable {
-            VidmTestCase.this.host = createHost();
-            CommandLineArgumentParser.parseFromProperties(VidmTestCase.this.host);
-            VidmTestCase.this.host.setStressTest(VidmTestCase.this.isStressTest);
-            initializeHost(VidmTestCase.this.host);
-            beforeHostStart(VidmTestCase.this.host);
-            VidmTestCase.this.host.start();
+            AuthenticationTestCase.this.host = createHost();
+            CommandLineArgumentParser.parseFromProperties(AuthenticationTestCase.this.host);
+            AuthenticationTestCase.this.host.setStressTest(AuthenticationTestCase.this.isStressTest);
+            initializeHost(AuthenticationTestCase.this.host);
+            beforeHostStart(AuthenticationTestCase.this.host);
+            AuthenticationTestCase.this.host.start();
         }
 
         @Override
         protected void after() {
-            beforeHostTearDown(VidmTestCase.this.host);
-            VidmTestCase.this.host.tearDown();
+            beforeHostTearDown(AuthenticationTestCase.this.host);
+            AuthenticationTestCase.this.host.tearDown();
         }
     };
 
     protected TestRule watcher = new TestWatcher() {
         protected void starting(Description description) {
-            VidmTestCase.this.host.log("Running test: " + description.getMethodName());
+            AuthenticationTestCase.this.host.log("Running test: " + description.getMethodName());
         }
     };
 
-    public VidmVerificationHost createHost() throws Exception {
-        return VidmVerificationHost.create();
+    public AuthenticationVerificationHost createHost() throws Exception {
+        return AuthenticationVerificationHost.create();
     }
 
-    public void initializeHost(VidmVerificationHost host) throws Exception {
-        VidmServiceHost.VidmHostArguments args = VidmVerificationHost.buildDefaultVidmHostArguments(0);
-        VidmVerificationHost.initialize(host, args);
+    public void initializeHost(AuthenticationVerificationHost host) throws Exception {
+        AuthenticationServiceHost.AuthenticationHostArguments args = AuthenticationVerificationHost.buildDefaultAuthenticationHostArguments(0);
+        AuthenticationVerificationHost.initialize(host, args);
     }
 
-    public void beforeHostStart(VidmVerificationHost host) throws Exception {
+    public void beforeHostStart(AuthenticationVerificationHost host) throws Exception {
 
     }
 
-    public void beforeHostTearDown(VidmVerificationHost host) {
+    public void beforeHostTearDown(AuthenticationVerificationHost host) {
     }
 
     /**
-     * @see VidmVerificationHost#getSafeHandler(CompletionHandler)
+     * @see AuthenticationVerificationHost#getSafeHandler(CompletionHandler)
      * @param handler
      * @return
      */
@@ -90,5 +90,5 @@ public class VidmTestCase {
     }
 
     @Rule
-    public TestRule chain = RuleChain.outerRule(this.verificationHostRule).around(this.watcher);
+    public TestRule chain = RuleChain.outerRule(this.authenticationHostRule).around(this.watcher);
 }
