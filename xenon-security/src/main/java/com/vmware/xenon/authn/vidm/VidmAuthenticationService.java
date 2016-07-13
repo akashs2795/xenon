@@ -42,6 +42,10 @@ public class VidmAuthenticationService extends AuthenticationService {
 
     public static String SELF_LINK = ServiceUriPaths.CORE_AUTHN + "/vidm";
 
+    public static final String WWW_AUTHENTICATE_HEADER_NAME = "WWW-Authenticate";
+    public static final String WWW_AUTHENTICATE_HEADER_VALUE = "Basic realm=\"xenon\"";
+    public static final String AUTHORIZATION_HEADER_NAME = "Authorization";
+
     protected String hostName = VidmProperties.getHostName();
     protected String clientID = VidmProperties.getClientId();
     protected String clientSecret = VidmProperties.getClientSecret();

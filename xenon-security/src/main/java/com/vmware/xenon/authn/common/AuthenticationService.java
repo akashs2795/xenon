@@ -19,10 +19,6 @@ import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 
 public abstract class AuthenticationService extends StatelessService{
 
-    public static final String WWW_AUTHENTICATE_HEADER_NAME = "WWW-Authenticate";
-    public static final String WWW_AUTHENTICATE_HEADER_VALUE = "Basic realm=\"xenon\"";
-    public static final String AUTHORIZATION_HEADER_NAME = "Authorization";
-
     @Override
     public void authorizeRequest(Operation op) {
         op.complete();

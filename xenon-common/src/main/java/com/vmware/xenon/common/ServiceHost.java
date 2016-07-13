@@ -315,6 +315,8 @@ public class ServiceHost implements ServiceRequestSender {
     static final Path DEFAULT_SANDBOX = DEFAULT_TMPDIR.resolve("xenon");
     static final Path DEFAULT_RESOURCE_SANDBOX_DIR = Paths.get("resources");
 
+    static final String AUTH_TYPE_BASIC = "Basic";
+
     /**
      * Estimate for average service state memory cost, in bytes. This can be computed per
      * state cached, estimated per kind, or made tunable in the future. Its used solely for estimating
@@ -3008,10 +3010,11 @@ public class ServiceHost implements ServiceRequestSender {
      *        When a support for new auth provider is added, ensure that its verification service
      *        is also synchronous else this will simply return back a null claims data.
      */
-    public void doVerificationSynchronously(String authToken , String authProvider) {
+    public Claims doVerificationSynchronously(String authToken , String authProvider) {
         String targetURI = UriUtils.buildUriPath(
                 ServiceUriPaths.CORE_AUTHN_VERIFY, authProvider);
         CountDownLatch verificationComplete = new CountDownLatch(1);
+        final Claims[] externalClaimsData = new Claims[1];
         Operation postRequest = Operation.createPost(UriUtils.buildUri(this , targetURI))
                 .setReferer(this.getUri())
                 .setBody(new Object())
@@ -3020,26 +3023,27 @@ public class ServiceHost implements ServiceRequestSender {
                     if (authEx != null) {
                         log(Level.WARNING, "Error verifying the token : %s" ,
                                 Utils.toString(authEx));
-                        this.externalClaimsData = null;
+                        externalClaimsData[0] = null ;
                         verificationComplete.countDown();
                         return ;
                     }
                     if (authOp.getStatusCode() != Operation.STATUS_CODE_OK) {
-                        this.externalClaimsData = null;
                         verificationComplete.countDown();
+                        externalClaimsData[0] = null ;
                         return;
                     }
-                    this.externalClaimsData = authOp.getBody(Claims.class);
+                    externalClaimsData[0] = authOp.getBody(Claims.class);
                     verificationComplete.countDown();
-                    return ;
                 });
         sendRequest(postRequest);
 
         try {
             verificationComplete.await();
+            return externalClaimsData[0];
         } catch (InterruptedException e) {
             log(Level.INFO, "Timeout waiting for verification request to %s",
                     postRequest.getUri().getPath());
+            return null ;
         }
     }
 
@@ -3051,9 +3055,7 @@ public class ServiceHost implements ServiceRequestSender {
      * @return Claims
      */
     public Claims externalProviderVerification(String authToken, String authProvider) {
-        this.externalClaimsData = null ;
-        doVerificationSynchronously(authToken , authProvider);
-        return this.externalClaimsData;
+        return doVerificationSynchronously(authToken , authProvider);
     }
 
     AuthorizationContext getAuthorizationContext(Operation op) {
@@ -3068,7 +3070,7 @@ public class ServiceHost implements ServiceRequestSender {
         }
 
         if (authType == null) {
-            authType = "Basic" ;
+            authType = AUTH_TYPE_BASIC ;
         }
         if (token == null) {
             return null;
@@ -3079,7 +3081,7 @@ public class ServiceHost implements ServiceRequestSender {
         try {
             Claims claims = null;
             if (ctx == null) {
-                if (!authType.matches("Basic")) {
+                if (!authType.matches(AUTH_TYPE_BASIC)) {
                     claims = externalProviderVerification(token , authType.toLowerCase());
                 } else {
                     claims = this.getTokenVerifier().verify(token, Claims.class);
