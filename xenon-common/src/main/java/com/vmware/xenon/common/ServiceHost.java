@@ -520,8 +520,6 @@ public class ServiceHost implements ServiceRequestSender {
     private AuthorizationContext systemAuthorizationContext;
     private AuthorizationContext guestAuthorizationContext;
 
-    protected Claims externalClaimsData ;
-
     protected ServiceHost() {
         this.state = new ServiceHostState();
         this.state.id = UUID.randomUUID().toString();

@@ -85,16 +85,16 @@ public interface AuthenticationService {
 
     /**
      * handlePostForVerification function is triggered when a POST request is made to the verification
-     * service of any auth provider. It sets the operation state as the claimsVerificationState
+     * service of any auth provider. It sets the operation state as the Claims
      * after successful verification
      */
     public void handlePostForVerification(Operation op) ;
 
     /**
      * The auth provider has to implement this method which will decode the token
-     * and generate a ClaimsVerificationState object in return. If unable to decode the token or
+     * and generate a Claims object in return. If unable to decode the token or
      * create the object, throw an appropriate exception
-     * @return ClaimsVerificationState
+     * @return Claims
      * @throws Exception
      */
     public Claims verify(String token) throws Exception ;
