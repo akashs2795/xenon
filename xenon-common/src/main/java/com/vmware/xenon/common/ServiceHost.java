@@ -63,7 +63,6 @@ import java.util.logging.ConsoleHandler;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
@@ -156,6 +155,14 @@ public class ServiceHost implements ServiceRequestSender {
 
     public static class ServiceNotFoundException extends IllegalStateException {
         private static final long serialVersionUID = 663670123267539178L;
+
+        public ServiceNotFoundException() {
+            super();
+        }
+
+        public ServiceNotFoundException(String servicePath) {
+            super("Service not found: " + servicePath);
+        }
     }
 
     public static class Arguments {
@@ -258,8 +265,8 @@ public class ServiceHost implements ServiceRequestSender {
 
     }
 
-    private static final LogFormatter LOG_FORMATTER = new LogFormatter();
-    private static final LogFormatter COLOR_LOG_FORMATTER = new ColorLogFormatter();
+    protected static final LogFormatter LOG_FORMATTER = new LogFormatter();
+    protected static final LogFormatter COLOR_LOG_FORMATTER = new ColorLogFormatter();
 
     public static final String SERVICE_HOST_STATE_FILE = "serviceHostState.json";
 
@@ -461,7 +468,7 @@ public class ServiceHost implements ServiceRequestSender {
     private FileHandler handler;
 
     private Map<String, AuthorizationContext> authorizationContextCache = new ConcurrentHashMap<>();
-    private Map<String, String> userLinktoTokenMap = new ConcurrentHashMap<>();
+    private Map<String, Set<String>> userLinktoTokenMap = new ConcurrentHashMap<>();
 
     private final Map<String, ServiceDocumentDescription> descriptionCache = new HashMap<>();
     private final ServiceDocumentDescription.Builder descriptionBuilder = Builder.create();
@@ -3119,7 +3126,7 @@ public class ServiceHost implements ServiceRequestSender {
             ctx = b.getResult();
             synchronized (this.state) {
                 this.authorizationContextCache.put(token, ctx);
-                this.userLinktoTokenMap.put(claims.getSubject(), token);
+                addUserToken(this.userLinktoTokenMap, claims.getSubject(), token);
             }
             return ctx;
         } catch (TokenException | GeneralSecurityException e) {
@@ -3129,8 +3136,25 @@ public class ServiceHost implements ServiceRequestSender {
         return null;
     }
 
+
+    /**
+     * Helper method to associate a token with a userServiceLink
+     * @param userLinktoTokenMap map to add the entry to
+     * @param userServiceLink the user service reference
+     * @param token user token
+     */
+    private void addUserToken(Map<String, Set<String>> userLinktoTokenMap, String userServiceLink, String token) {
+        Set<String> tokenSet = userLinktoTokenMap.get(userServiceLink);
+        if (tokenSet == null) {
+            tokenSet = new HashSet<String>();
+        }
+        tokenSet.add(token);
+        userLinktoTokenMap.put(userServiceLink, tokenSet);
+    }
+
     void failRequestServiceNotFound(Operation inboundOp) {
-        failRequest(inboundOp, Operation.STATUS_CODE_NOT_FOUND, new ServiceNotFoundException());
+        failRequest(inboundOp, Operation.STATUS_CODE_NOT_FOUND,
+                new ServiceNotFoundException(inboundOp.getUri().toString()));
     }
 
     /**
@@ -3963,36 +3987,109 @@ public class ServiceHost implements ServiceRequestSender {
      * available stage. If service start fails for any one, the completion will be called with a
      * failure argument.
      *
+     * When {@code checkReplica} flag is on(see other overloading methods), this method checks not
+     * only the local node, but also checks the service availability in node group for factory links
+     * that produce replicated services.
+     *
      * Note that supplying multiple self links will result in multiple completion invocations. The
      * handler provided must track how many times it has been called
+     *
+     * @see #checkReplicatedServiceAvailable(CompletionHandler, String)
+     * @see NodeGroupUtils#registerForReplicatedServiceAvailability(ServiceHost, Operation, String, String)
+     * @see NodeGroupUtils#checkServiceAvailability(CompletionHandler, Service)
      */
-    public void registerForServiceAvailability(
-            CompletionHandler completion, String... servicePaths) {
+    public void registerForServiceAvailability(CompletionHandler completion,
+            String... servicePaths) {
+        registerForServiceAvailability(completion, ServiceUriPaths.DEFAULT_NODE_SELECTOR, false,
+                servicePaths);
+    }
+
+    public void registerForServiceAvailability(CompletionHandler completion, boolean checkReplica,
+            String... servicePaths) {
+        registerForServiceAvailability(completion, ServiceUriPaths.DEFAULT_NODE_SELECTOR,
+                checkReplica, servicePaths);
+    }
+
+    public void registerForServiceAvailability(CompletionHandler completion,
+            String nodeSelectorPath, boolean checkReplica, String... servicePaths) {
         if (servicePaths == null || servicePaths.length == 0) {
             throw new IllegalArgumentException("selfLinks are required");
         }
         Operation op = Operation.createPost(null)
                 .setCompletion(completion)
                 .setExpiration(getOperationTimeoutMicros() + Utils.getNowMicrosUtc());
-        registerForServiceAvailability(op, servicePaths);
+
+        registerForServiceAvailability(op, checkReplica, nodeSelectorPath, servicePaths);
     }
 
-    void registerForServiceAvailability(
-            Operation opTemplate, String... servicePaths) {
+    void registerForServiceAvailability(Operation opTemplate, String... servicePaths) {
+        registerForServiceAvailability(opTemplate, false, ServiceUriPaths.DEFAULT_NODE_SELECTOR,
+                servicePaths);
+    }
+
+    private void registerForServiceAvailability(Operation opTemplate, boolean checkReplica,
+            String nodeSelectorPath, String... servicePaths) {
         final boolean doOpClone = servicePaths.length > 1;
         // clone client supplied array since this method mutates it
         final String[] clonedLinks = Arrays.copyOf(servicePaths, servicePaths.length);
+
+        List<String> replicatedServiceLinks = new ArrayList<>();
 
         synchronized (this.state) {
             for (int i = 0; i < clonedLinks.length; i++) {
                 String link = clonedLinks[i];
                 Service s = findService(link);
-                if (s != null && s.getProcessingStage() == Service.ProcessingStage.AVAILABLE) {
-                    continue;
+
+                // service is null if this method is called before even the service is registered
+                if (s != null) {
+                    if (checkReplica &&
+                            s.hasOption(ServiceOption.FACTORY) &&
+                            s.hasOption(ServiceOption.REPLICATION)) {
+                        // null the link so we do not attempt to invoke the completion below
+                        clonedLinks[i] = null;
+                        replicatedServiceLinks.add(link);
+                        continue;
+                    }
+
+                    if (s.getProcessingStage() == Service.ProcessingStage.AVAILABLE) {
+                        continue;
+                    }
+
+                    // track operation
+                    this.operationTracker.trackServiceAvailableCompletion(link, opTemplate,
+                            doOpClone);
+                } else {
+                    final Operation opTemplateClone = getOperationForServiceAvailability(opTemplate,
+                            link,
+                            doOpClone);
+                    if (checkReplica) {
+                        // when local service is not yet started and required to check replicated
+                        // service, delay the node-group-service-availability-check until local
+                        // service becomes available by nesting the logic to the opTemplate.
+                        opTemplateClone.nestCompletion(op -> {
+                            Service service = findService(op.getUri().getPath());
+                            if (service != null
+                                    && service.hasOption(ServiceOption.FACTORY)
+                                    && service.hasOption(ServiceOption.REPLICATION)) {
+                                run(() -> {
+                                    NodeGroupUtils
+                                            .registerForReplicatedServiceAvailability(this,
+                                                    opTemplateClone,
+                                                    link, nodeSelectorPath);
+                                });
+                            } else {
+                                opTemplateClone.complete();
+                            }
+                        });
+
+                    }
+
+                    // Track operation but do not clone again.
+                    // Add the operation with the specific nested completion
+                    this.operationTracker.trackServiceAvailableCompletion(link, opTemplateClone,
+                            false);
                 }
 
-                this.operationTracker
-                        .trackServiceAvailableCompletion(link, opTemplate, doOpClone);
                 // null the link so we do not attempt to invoke the completion below
                 clonedLinks[i] = null;
             }
@@ -4003,17 +4100,32 @@ public class ServiceHost implements ServiceRequestSender {
                 continue;
             }
 
+            final Operation opFinal = opTemplate;
             run(() -> {
-                Operation o = opTemplate;
-                if (doOpClone) {
-                    o = opTemplate.clone().setUri(UriUtils.buildUri(this, link));
-                }
-                if (o.getUri() == null) {
-                    o.setUri(UriUtils.buildUri(this, link));
-                }
+                Operation o = getOperationForServiceAvailability(opFinal, link, doOpClone);
                 o.complete();
             });
         }
+
+        for (String link : replicatedServiceLinks) {
+            Operation o = getOperationForServiceAvailability(opTemplate, link, doOpClone);
+            run(() -> {
+                NodeGroupUtils
+                        .registerForReplicatedServiceAvailability(this, o, link, nodeSelectorPath);
+            });
+        }
+    }
+
+    private Operation getOperationForServiceAvailability(Operation op, String link,
+            boolean doClone) {
+        Operation o = op;
+        if (doClone) {
+            o = op.clone().setUri(UriUtils.buildUri(this, link));
+        }
+        if (o.getUri() == null) {
+            o.setUri(UriUtils.buildUri(this, link));
+        }
+        return o;
     }
 
     /**
@@ -4109,18 +4221,19 @@ public class ServiceHost implements ServiceRequestSender {
     }
 
     /**
-     * Convenience method that uses a broadcast GET to the supplied
-     * service available suffix (/available). If at least one peer service responds
-     * with OK, the supplied completion handler will complete with success.
-     * See {@link NodeGroupUtils}
+     * @see NodeGroupUtils#checkServiceAvailability(CompletionHandler, ServiceHost, String, String)
      */
     public void checkReplicatedServiceAvailable(CompletionHandler ch, String servicePath) {
+        checkReplicatedServiceAvailable(ch, servicePath, ServiceUriPaths.DEFAULT_NODE_SELECTOR);
+    }
+
+    public void checkReplicatedServiceAvailable(CompletionHandler ch, String servicePath, String nodeSelectorPath) {
         Service s = this.findService(servicePath, true);
         if (s == null) {
             ch.handle(null, new IllegalStateException("service not found"));
             return;
         }
-        NodeGroupUtils.checkServiceAvailability(ch, s);
+        NodeGroupUtils.checkServiceAvailability(ch, s.getHost(), s.getSelfLink(), nodeSelectorPath);
     }
 
     public SystemHostInfo getSystemInfo() {
@@ -5042,7 +5155,7 @@ public class ServiceHost implements ServiceRequestSender {
         }
         synchronized (this.state) {
             this.authorizationContextCache.put(token, ctx);
-            this.userLinktoTokenMap.put(ctx.getClaims().getSubject(), token);
+            addUserToken(this.userLinktoTokenMap, ctx.getClaims().getSubject(), token);
         }
     }
 
@@ -5054,9 +5167,11 @@ public class ServiceHost implements ServiceRequestSender {
             throw new RuntimeException("Service not allowed to clear authorization token");
         }
         synchronized (this.state) {
-            String token = this.userLinktoTokenMap.get(userLink);
-            if (token != null) {
-                this.authorizationContextCache.remove(token);
+            Set<String> tokenSet = this.userLinktoTokenMap.get(userLink);
+            if (tokenSet != null) {
+                for (String token :tokenSet) {
+                    this.authorizationContextCache.remove(token);
+                }
             }
             this.userLinktoTokenMap.remove(userLink);
         }

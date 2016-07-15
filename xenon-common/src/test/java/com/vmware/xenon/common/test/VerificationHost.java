@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
@@ -48,13 +49,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
 import javax.net.ssl.SSLContext;
 import javax.xml.bind.DatatypeConverter;
 
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
+
 import org.apache.lucene.store.LockObtainFailedException;
 import org.junit.rules.TemporaryFolder;
 
@@ -214,6 +218,21 @@ public class VerificationHost extends ExampleServiceHost {
         SelfSignedCertificate ssc = new SelfSignedCertificate();
         h.setCertificateFileReference(ssc.certificate().toURI());
         h.setPrivateKeyFileReference(ssc.privateKey().toURI());
+    }
+
+    @Override
+    protected void configureLoggerFormatter(Logger logger) {
+        super.configureLoggerFormatter(logger);
+
+        // override with formatters for VerificationHost
+        // if custom formatter has already set, do NOT replace it.
+        for (Handler h : logger.getParent().getHandlers()) {
+            if (Objects.equals(h.getFormatter(), LOG_FORMATTER)) {
+                h.setFormatter(VerificationHostLogFormatter.NORMAL_FORMAT);
+            } else if (Objects.equals(h.getFormatter(), COLOR_LOG_FORMATTER)) {
+                h.setFormatter(VerificationHostLogFormatter.COLORED_FORMAT);
+            }
+        }
     }
 
     public void tearDown() {
@@ -952,6 +971,12 @@ public class VerificationHost extends ExampleServiceHost {
     public ServiceDocumentQueryResult getExpandedFactoryState(URI factoryUri) throws Throwable {
         factoryUri = UriUtils.buildExpandLinksQueryUri(factoryUri);
         return this.getServiceState(null, ServiceDocumentQueryResult.class, factoryUri);
+    }
+
+    public Map<String, ServiceStat> getServiceStats(URI serviceUri) throws Throwable {
+        ServiceStats stats = this.getServiceState(
+                null, ServiceStats.class, UriUtils.buildStatsUri(serviceUri));
+        return stats.entries;
     }
 
     public void doExampleServiceUpdateAndQueryByVersion(URI hostUri, int serviceCount)
@@ -1858,6 +1883,9 @@ public class VerificationHost extends ExampleServiceHost {
         return null;
     }
 
+    /**
+     * Randomly returns one of peer hosts.
+     */
     public VerificationHost getPeerHost() {
         URI hostUri = getPeerServiceUri(null);
         if (hostUri != null) {
@@ -3199,27 +3227,34 @@ public class VerificationHost extends ExampleServiceHost {
      * @param <T>           the type that represent's the task's state
      * @return the state of the task once it's {@link TaskState.TaskStage} == {@code expectedStage}
      */
+    @SuppressWarnings("unchecked")
     public <T extends TaskService.TaskServiceState> T waitForTask(Class<T> type, String taskUri,
             TaskState.TaskStage expectedStage) throws Throwable {
-        URI uri = UriUtils.buildUri(this, taskUri);
+        URI uri = UriUtils.buildUri(taskUri);
+
+        if (!uri.isAbsolute()) {
+            uri = UriUtils.buildUri(this, taskUri);
+        }
 
         // If the task's state ever reaches one of these "final" stages, we can stop waiting...
         List<TaskState.TaskStage> finalTaskStages = Arrays
                 .asList(TaskState.TaskStage.CANCELLED, TaskState.TaskStage.FAILED,
                         TaskState.TaskStage.FINISHED, expectedStage);
 
-        T state = null;
-        for (int i = 0; i < 20; i++) {
-            state = this.getServiceState(null, type, uri);
+        String error = String.format("Task did not reach expected state %s", expectedStage);
+        Object[] r = new Object[1];
+        final URI finalUri = uri;
+        waitFor(error, () -> {
+            T state = this.getServiceState(null, type, finalUri);
+            r[0] = state;
             if (state.taskInfo != null) {
                 if (finalTaskStages.contains(state.taskInfo.stage)) {
-                    break;
+                    return true;
                 }
             }
-            Thread.sleep(250);
-        }
-        assertEquals("Task did not reach expected state", state.taskInfo.stage, expectedStage);
-        return state;
+            return false;
+        });
+        return (T) r[0];
     }
 
     @FunctionalInterface
@@ -3233,7 +3268,10 @@ public class VerificationHost extends ExampleServiceHost {
             if (wh.isReady()) {
                 return;
             }
-            Thread.sleep(getMaintenanceIntervalMicros() / 1000);
+            long millis = getMaintenanceIntervalMicros() / 1000;
+            // sleep for a tenth of the maintenance interval
+            millis /= 10;
+            Thread.sleep(millis);
         }
         throw new TimeoutException(timeoutMsg);
     }

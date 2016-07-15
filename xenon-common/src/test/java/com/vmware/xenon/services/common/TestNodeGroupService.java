@@ -459,8 +459,7 @@ public class TestNodeGroupService {
 
         URI observerFactoryUri = UriUtils.buildUri(observerHostUri, customFactoryLink);
 
-        this.host.waitForReplicatedFactoryServiceAvailable(observerFactoryUri,
-                CUSTOM_GROUP_NODE_SELECTOR);
+        waitForReplicatedFactoryServiceAvailable(observerFactoryUri, CUSTOM_GROUP_NODE_SELECTOR);
 
         // create N services on the custom group, verify none of them got created on the observer.
         // We actually post directly to the observer node, which should forward to the other nodes
@@ -557,8 +556,7 @@ public class TestNodeGroupService {
 
         // before start joins, verify isolated factory synchronization is done
         for (URI hostUri : this.host.getNodeGroupMap().keySet()) {
-            this.host.waitForReplicatedFactoryServiceAvailable(UriUtils.buildUri(hostUri,
-                    ExampleService.FACTORY_LINK));
+            waitForReplicatedFactoryServiceAvailable(UriUtils.buildUri(hostUri, ExampleService.FACTORY_LINK), ServiceUriPaths.DEFAULT_NODE_SELECTOR);
         }
 
         // join a node, with no state, one by one, to the host with state.
@@ -805,7 +803,7 @@ public class TestNodeGroupService {
                     exampleStatesPerSelfLink);
 
             URI exampleFactoryUri = this.host.getPeerServiceUri(ExampleService.FACTORY_LINK);
-            this.host.waitForReplicatedFactoryServiceAvailable(exampleFactoryUri);
+            waitForReplicatedFactoryServiceAvailable(UriUtils.buildUri(exampleFactoryUri, ExampleService.FACTORY_LINK), ServiceUriPaths.DEFAULT_NODE_SELECTOR);
         } finally {
             this.host.log("test finished");
             if (h != null) {
@@ -1408,8 +1406,10 @@ public class TestNodeGroupService {
                 this.host.setNodeGroupQuorum(this.nodeCount);
                 // since we have disabled peer synch, trigger it explicitly so factories become available
                 this.host.scheduleSynchronizationIfAutoSyncDisabled(this.replicationNodeSelector);
-                this.host.waitForReplicatedFactoryServiceAvailable(
-                        this.host.getPeerServiceUri(this.replicationTargetFactoryLink));
+
+                waitForReplicatedFactoryServiceAvailable(
+                        this.host.getPeerServiceUri(this.replicationTargetFactoryLink),
+                        this.replicationNodeSelector);
 
                 waitForReplicationFactoryConvergence();
                 if (this.replicationUriScheme == ServiceHost.HttpScheme.HTTPS_ONLY) {
@@ -1907,18 +1907,20 @@ public class TestNodeGroupService {
         AuthorizationContext authContext = groupHost.assumeIdentity(userLink);
         groupHost.sendAndWaitExpectSuccess(
                 Operation.createGet(UriUtils.buildUri(groupHost, ExampleService.FACTORY_LINK)));
-        checkCache(peerHosts, authContext.getToken(), true);
+        this.host.waitFor("Timeout waiting for correct auth cache state",
+                () -> checkCache(peerHosts, authContext.getToken(), true));
         groupHost.setSystemAuthorizationContext();
         Throwable result = func.apply(groupHost);
         if (result != null) {
             throw result;
         }
         groupHost.resetSystemAuthorizationContext();
-        checkCache(this.host.getInProcessHostMap().values(), authContext.getToken(), false);
+        this.host.waitFor("Timeout waiting for correct auth cache state",
+                () -> checkCache(peerHosts, authContext.getToken(), false));
     }
 
     // helper method to check if the authz cache is in the expected state
-    private void checkCache(Collection<VerificationHost> peerHosts, String token, boolean expectEntries) throws Throwable {
+    private boolean checkCache(Collection<VerificationHost> peerHosts, String token, boolean expectEntries) throws Throwable {
         boolean contextFound = false;
         for (VerificationHost host : peerHosts) {
             host.setSystemAuthorizationContext();
@@ -1930,11 +1932,12 @@ public class TestNodeGroupService {
                 contextFound = true;
             }
         }
-        if (expectEntries) {
-            assertTrue(contextFound);
-        } else {
-            assertTrue(!contextFound);
+        if (expectEntries && contextFound) {
+            return true;
+        } else if (!expectEntries && !contextFound) {
+            return true;
         }
+        return false;
     }
 
     private void factoryDuplicatePost() throws Throwable, InterruptedException, TimeoutException {
@@ -2621,11 +2624,12 @@ public class TestNodeGroupService {
         this.host.waitForNodeGroupConvergence(2, 2);
         VerificationHost existingHost = this.host.getInProcessHostMap().values().iterator().next();
 
-        this.host.waitForReplicatedFactoryServiceAvailable(
-                this.host.getPeerServiceUri(ExampleTaskService.FACTORY_LINK));
-
-        this.host.waitForReplicatedFactoryServiceAvailable(
-                this.host.getPeerServiceUri(ExampleService.FACTORY_LINK));
+        waitForReplicatedFactoryServiceAvailable(
+                this.host.getPeerServiceUri(ExampleTaskService.FACTORY_LINK),
+                ServiceUriPaths.DEFAULT_NODE_SELECTOR);
+        waitForReplicatedFactoryServiceAvailable(
+                this.host.getPeerServiceUri(ExampleService.FACTORY_LINK),
+                ServiceUriPaths.DEFAULT_NODE_SELECTOR);
 
         // create some additional tasks on the remaining two hosts, but make sure they don't delete
         // any example service instances, by specifying a name value we know will not match anything
@@ -2982,7 +2986,7 @@ public class TestNodeGroupService {
             for (URI fu : this.host.getNodeGroupToFactoryMap(this.replicationTargetFactoryLink)
                     .values()) {
                 // confirm that /factory/available returns 200 across all nodes
-                this.host.waitForReplicatedFactoryServiceAvailable(fu);
+                waitForReplicatedFactoryServiceAvailable(fu, ServiceUriPaths.DEFAULT_NODE_SELECTOR);
             }
         }
 
@@ -3330,7 +3334,7 @@ public class TestNodeGroupService {
             // verify /available reports correct results on the factory.
             URI factoryUri = factories.values().iterator().next();
             Class<?> stateType = serviceStates.values().iterator().next().getClass();
-            this.host.waitForReplicatedFactoryServiceAvailable(factoryUri);
+            waitForReplicatedFactoryServiceAvailable(factoryUri, ServiceUriPaths.DEFAULT_NODE_SELECTOR);
 
             // we have the correct number of services on all hosts. Now verify
             // the state of each service matches what we expect
@@ -3522,5 +3526,38 @@ public class TestNodeGroupService {
         }
 
         throw new TimeoutException();
+    }
+
+    private void waitForReplicatedFactoryServiceAvailable(URI uri, String nodeSelectorPath)
+            throws Throwable {
+        if (UriUtils.isHostEqual(this.host, uri)) {
+
+            VerificationHost host = this.host;
+
+            // if uri is for in-process peers, then use the one
+            URI peerUri = UriUtils.buildUri(uri.toString().replace(uri.getPath(), ""));
+            VerificationHost peer = this.host.getInProcessHostMap().get(peerUri);
+            if (peer != null) {
+                host = peer;
+            }
+
+            TestContext ctx = host.testCreate(1);
+            CompletionHandler ch = (o, e) -> {
+                if (e != null) {
+                    String msg = "Failed to check replicated factory service availability";
+                    ctx.failIteration(new RuntimeException(msg, e));
+                    return;
+                }
+                ctx.completeIteration();
+            };
+
+            host.registerForServiceAvailability(ch, nodeSelectorPath, true, uri.getPath());
+            ctx.await();
+
+        } else {
+            // for remote host
+            this.host.waitForReplicatedFactoryServiceAvailable(uri, nodeSelectorPath);
+        }
+
     }
 }
