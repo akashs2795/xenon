@@ -120,6 +120,7 @@ import com.vmware.xenon.services.common.UpdateIndexRequest;
 import com.vmware.xenon.services.common.UserGroupService;
 import com.vmware.xenon.services.common.UserService;
 import com.vmware.xenon.services.common.authn.AuthenticationConstants;
+import com.vmware.xenon.services.common.authn.AuthenticationRequest;
 import com.vmware.xenon.services.common.authn.BasicAuthenticationService;
 
 /**
@@ -3012,12 +3013,15 @@ public class ServiceHost implements ServiceRequestSender {
      */
     public Claims doVerificationSynchronously(String authToken , String authProvider) {
         String targetURI = UriUtils.buildUriPath(
-                ServiceUriPaths.CORE_AUTHN_VERIFY, authProvider);
+                ServiceUriPaths.CORE_AUTHN, authProvider);
+        AuthenticationRequest body =
+                new AuthenticationRequest();
+        body.kind = AuthenticationRequest.Kind.VERIFICATION;
         CountDownLatch verificationComplete = new CountDownLatch(1);
         final Claims[] externalClaimsData = new Claims[1];
         Operation postRequest = Operation.createPost(UriUtils.buildUri(this , targetURI))
                 .setReferer(this.getUri())
-                .setBody(new Object())
+                .setBody(body)
                 .addRequestHeader("token" , authToken)
                 .setCompletion((authOp ,authEx) -> {
                     if (authEx != null) {

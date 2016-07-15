@@ -62,7 +62,6 @@
     <module>xenon-swagger</module>
     <module>xenon-loader-test</module>
     <module>xenon-dns</module>
-    <module>xenon-security</module>
   </modules>
 
   <properties>
@@ -112,7 +111,6 @@
       <modules>
         <module>xenon-host</module>
         <module>xenon-samples</module>
-        <module>xenon-security</module>
         <module>xenon-dns</module>
         <module>xenon-websocket-test</module>
         <module>xenon-client</module>
@@ -127,7 +125,6 @@
       <modules>
         <module>xenon-host</module>
         <module>xenon-samples</module>
-        <module>xenon-security</module>
         <module>xenon-dns</module>
         <module>xenon-websocket-test</module>
         <module>xenon-client</module>

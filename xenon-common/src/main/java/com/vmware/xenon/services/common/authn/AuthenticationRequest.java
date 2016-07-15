@@ -15,10 +15,15 @@ package com.vmware.xenon.services.common.authn;
 
 public class AuthenticationRequest {
 
+    public static enum Kind {
+            AUTHENTICATION, VERIFICATION
+    }
+
     public static enum AuthenticationRequestType {
         LOGIN, LOGOUT
     }
 
+    public Kind kind;
     public AuthenticationRequestType requestType;
     public Long sessionExpirationSeconds;
 
