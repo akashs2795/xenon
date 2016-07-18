@@ -17,11 +17,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.net.URI;
-import java.util.Collection;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentSkipListSet;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -32,15 +33,29 @@ import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.ServiceDocumentQueryResult;
 import com.vmware.xenon.common.TaskState;
 import com.vmware.xenon.common.UriUtils;
+import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.common.test.TestContext;
 import com.vmware.xenon.services.common.ExampleService.ExampleServiceState;
+import com.vmware.xenon.services.common.QueryTask.NumericRange;
 import com.vmware.xenon.services.common.QueryTask.Query;
 import com.vmware.xenon.services.common.QueryValidationTestService.QueryValidationServiceState;
 
 public class TestGraphQueryTaskService extends BasicTestCase {
     private URI factoryUri;
 
+    /**
+     * Number of services in the top tier of the graph
+     */
     public int serviceCount = 10;
+
+    /**
+     * Number of links to peer services, per service
+     */
+    public int linkCount = 2;
+
+    private long taskCreationTimeMicros;
+
+    private long taskCompletionTimeMicros;
 
     @Before
     public void setUp() {
@@ -58,13 +73,45 @@ public class TestGraphQueryTaskService extends BasicTestCase {
         initialBrokenState = GraphQueryTask.Builder.create(2).build();
         post.setBody(initialBrokenState);
         this.host.sendAndWaitExpectFailure(post, Operation.STATUS_CODE_BAD_REQUEST);
-        // valid depth, 1 stage, currentDepth > 0
+        // valid depth, depth != stage count
         QueryTask q = QueryTask.Builder.create().setQuery(
                 Query.Builder.create().addKindFieldClause(ExampleServiceState.class)
                         .build())
                 .build();
         initialBrokenState = GraphQueryTask.Builder.create(2).addQueryStage(q).build();
+        post.setBody(initialBrokenState);
+        this.host.sendAndWaitExpectFailure(post, Operation.STATUS_CODE_BAD_REQUEST);
+        // valid depth, 1 stage, currentDepth > 0
+        q = QueryTask.Builder.create().setQuery(
+                Query.Builder.create().addKindFieldClause(ExampleServiceState.class)
+                        .build())
+                .build();
+        initialBrokenState = GraphQueryTask.Builder.create(1).addQueryStage(q).build();
         initialBrokenState.currentDepth = 12000;
+        post.setBody(initialBrokenState);
+        this.host.sendAndWaitExpectFailure(post, Operation.STATUS_CODE_BAD_REQUEST);
+        // resultLimit set in first stage
+        q = QueryTask.Builder.create().setQuery(
+                Query.Builder.create().addKindFieldClause(ExampleServiceState.class)
+                        .build())
+                .build();
+        q.querySpec.resultLimit = 2;
+        QueryTask secondStage = QueryTask.Builder.create().setQuery(
+                Query.Builder.create().addKindFieldClause(ExampleServiceState.class)
+                        .build())
+                .build();
+        initialBrokenState = GraphQueryTask.Builder.create(2)
+                .addQueryStage(q)
+                .addQueryStage(secondStage).build();
+
+        post.setBody(initialBrokenState);
+        this.host.sendAndWaitExpectFailure(post, Operation.STATUS_CODE_BAD_REQUEST);
+        // resultLimit set in second stage
+        secondStage.querySpec.resultLimit = 2;
+        initialBrokenState = GraphQueryTask.Builder.create(2)
+                .addQueryStage(q)
+                .addQueryStage(secondStage).build();
+
         post.setBody(initialBrokenState);
         this.host.sendAndWaitExpectFailure(post, Operation.STATUS_CODE_BAD_REQUEST);
     }
@@ -90,27 +137,87 @@ public class TestGraphQueryTaskService extends BasicTestCase {
     public void twoStage() throws Throwable {
         String name = UUID.randomUUID().toString();
 
-        createQueryTargetServices(name);
+        createQueryTargetServices(name, 0);
 
         GraphQueryTask initialState = createTwoStageTask(name);
         GraphQueryTask finalState = waitForTask(initialState);
 
-        verifyTwoStageResult(finalState);
+        verifyNStageResult(finalState, this.serviceCount, this.serviceCount);
 
         finalState = createTwoStageTask(name, true);
-        verifyTwoStageResult(finalState);
+        verifyNStageResult(finalState, this.serviceCount, this.serviceCount);
     }
 
-    private void verifyTwoStageResult(GraphQueryTask finalState) {
-        ServiceDocumentQueryResult stageOneResults = finalState.stages.get(0).results;
-        verifyStageResults(stageOneResults, this.serviceCount, false);
+    @Test
+    public void twoStageNoResultsFinalStage() throws Throwable {
+        String name = UUID.randomUUID().toString();
 
-        ServiceDocumentQueryResult stageTwoResults = finalState.stages.get(1).results;
-        verifyStageResults(stageTwoResults, this.serviceCount, true);
+        createQueryTargetServices(name, 0);
+
+        // delete the linked services, so our final stage produces zero results
+        this.host.deleteAllChildServices(UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK));
+
+        GraphQueryTask initialState = createTwoStageTask(name);
+        GraphQueryTask finalState = waitForTask(initialState);
+
+        verifyNStageResult(finalState, this.serviceCount, 0);
+
+        finalState = createTwoStageTask(name, true);
+        verifyNStageResult(finalState, this.serviceCount, 0);
+    }
+
+    @Test
+    public void threeStageTreeGraph() throws Throwable {
+        String name = UUID.randomUUID().toString();
+
+        int stageCount = 3;
+        // We will create a graph with N layers of the same services, each layer pointing to instances
+        // to the next layer. They are all services of the same type. Its like a graph of
+        // friend relationships: each document has a field, called friendLinks, pointing to
+        // other instances of itself. In our case, we use QueryValidationServiceState.serviceLinks.
+        // The query will essentially be a friends of friends graph query, 4 deep
+        int recursionDepth = stageCount - 1;
+        createQueryTargetServices(name, recursionDepth);
+
+        GraphQueryTask initialState = createMultiStageRecursiveTask(stageCount, false);
+        GraphQueryTask finalState = waitForTask(initialState);
+        logGraphQueryThroughput(finalState);
+
+        int[] resultCounts = {
+                this.serviceCount,
+                this.serviceCount * this.linkCount,
+                this.serviceCount * this.linkCount * this.linkCount
+        };
+        verifyNStageResult(finalState, true, resultCounts);
+
+        // test direct task, same parameters
+        finalState = createMultiStageRecursiveTask(stageCount, true);
+        logGraphQueryThroughput(finalState);
+        verifyNStageResult(finalState, true, resultCounts);
+    }
+
+    private void verifyNStageResult(GraphQueryTask finalState, int... expectedCounts) {
+        verifyNStageResult(finalState, false, expectedCounts);
+    }
+
+    private void verifyNStageResult(GraphQueryTask finalState, boolean isRecursive,
+            int... expectedCounts) {
+        for (int i = 0; i < expectedCounts.length; i++) {
+            int expectedCount = expectedCounts == null ? this.serviceCount : expectedCounts[i];
+            ServiceDocumentQueryResult stageOneResults = finalState.stages.get(i).results;
+            boolean isFinalStage = i == expectedCounts.length - 1;
+            verifyStageResults(stageOneResults, i, expectedCount, isRecursive, isFinalStage);
+        }
     }
 
     private void verifyStageResults(ServiceDocumentQueryResult stage,
             int expectedResultCount, boolean isFinalStage) {
+        verifyStageResults(stage, 0, expectedResultCount, false, isFinalStage);
+    }
+
+    private void verifyStageResults(ServiceDocumentQueryResult stage,
+            int stageIndex,
+            int expectedResultCount, boolean isRecursive, boolean isFinalStage) {
         assertTrue(stage != null);
         assertTrue(stage.queryTimeMicros > 0);
         assertTrue(stage.documentCount == expectedResultCount);
@@ -120,7 +227,12 @@ public class TestGraphQueryTaskService extends BasicTestCase {
                 throw new IllegalStateException("null selectedLinks");
             }
         } else if (!isFinalStage) {
-            assertTrue(stage.selectedLinks.size() == expectedResultCount);
+            int expectedLinkCount = expectedResultCount;
+            if (isRecursive) {
+                expectedLinkCount = (int) (this.serviceCount
+                        * Math.pow(this.linkCount, stageIndex + 1));
+            }
+            assertTrue(stage.selectedLinks.size() == expectedLinkCount);
         }
     }
 
@@ -170,16 +282,52 @@ public class TestGraphQueryTaskService extends BasicTestCase {
         return initialState;
     }
 
+    private GraphQueryTask createMultiStageRecursiveTask(int stageCount,
+            boolean isDirect) throws Throwable {
+        return createMultiStageRecursiveTask(stageCount, null, isDirect);
+    }
+
+    private GraphQueryTask createMultiStageRecursiveTask(int stageCount,
+            QueryTask initialStage,
+            boolean isDirect) throws Throwable {
+        GraphQueryTask.Builder builder = GraphQueryTask.Builder.create(stageCount);
+        for (int i = 0; i < stageCount; i++) {
+            if (i == 0 && initialStage != null) {
+                builder.addQueryStage(initialStage);
+                continue;
+            }
+
+            // each stage selects the services with the specific kind and the "serviceLinks" field
+            // that points to more instances of the same service type. It logically forms a
+            // directed graph, a tree, with the first layer pointing to serviceCount * linkCount
+            // leafs, which in turn, each point to linkCount worth of sub leafs, etc
+            QueryTask stage = QueryTask.Builder.create()
+                    .addLinkTerm(QueryValidationServiceState.FIELD_NAME_SERVICE_LINKS)
+                    .setQuery(Query.Builder.create()
+                            .addRangeClause(QueryValidationServiceState.FIELD_NAME_LONG_VALUE,
+                                    NumericRange.createLongRange((long) i, (long) i, true, true))
+                            .addKindFieldClause(QueryValidationServiceState.class)
+                            .build())
+                    .build();
+            builder.addQueryStage(stage);
+        }
+
+        GraphQueryTask initialState = builder.build();
+        this.taskCreationTimeMicros = Utils.getNowMicrosUtc();
+        initialState = createTask(initialState, isDirect);
+        return initialState;
+    }
+
     private GraphQueryTask createTask(GraphQueryTask initialState, boolean isDirect)
             throws Throwable {
         Operation post = Operation.createPost(this.factoryUri);
         GraphQueryTask[] rsp = new GraphQueryTask[1];
 
         if (isDirect) {
-            initialState.taskInfo = new TaskState();
-            initialState.taskInfo.isDirect = isDirect;
+            initialState.taskInfo = TaskState.createDirect();
         }
 
+        this.host.log("Creating task (isDirect:%s)", isDirect);
         TestContext ctx = testCreate(1);
         post.setBody(initialState).setCompletion((o, e) -> {
             if (e != null) {
@@ -188,18 +336,47 @@ public class TestGraphQueryTaskService extends BasicTestCase {
             }
             GraphQueryTask r = o.getBody(GraphQueryTask.class);
             rsp[0] = r;
+            if (isDirect) {
+                this.taskCompletionTimeMicros = Utils.getNowMicrosUtc();
+            }
             ctx.completeIteration();
         });
         this.host.send(post);
         testWait(ctx);
+        this.host.log("Task created (isDirect:%s) (stage: %s)", isDirect, rsp[0].taskInfo.stage);
+        assertEquals(isDirect, rsp[0].taskInfo.isDirect);
         return rsp[0];
     }
 
     private GraphQueryTask waitForTask(GraphQueryTask initialState) throws Throwable {
-        return this.host.waitForFinishedTask(GraphQueryTask.class, initialState.documentSelfLink);
+        GraphQueryTask t = this.host.waitForFinishedTask(GraphQueryTask.class,
+                initialState.documentSelfLink);
+        this.taskCompletionTimeMicros = Utils.getNowMicrosUtc();
+        return t;
     }
 
-    private void createQueryTargetServices(String name) throws Throwable {
+    private void logGraphQueryThroughput(GraphQueryTask finalState) {
+        double timeDelta = this.taskCompletionTimeMicros - this.taskCreationTimeMicros;
+        timeDelta = timeDelta / 1000000;
+        double edgeCount = 0;
+        double nodeCount = 0;
+        for (QueryTask stage : finalState.stages) {
+            if (stage.results != null && stage.results.selectedLinks != null) {
+                edgeCount += stage.results.selectedLinks.size();
+            }
+            nodeCount += stage.results.documentCount;
+        }
+        double edgeTraversalThroughput = edgeCount / timeDelta;
+        double nodeProcessingThroughput = nodeCount / timeDelta;
+        this.host
+                .log("IsDirect:%s, Edge count: %f, Node count: %f, Edge throughput: %f, Node throughput %f",
+                        finalState.taskInfo.isDirect,
+                        edgeCount, nodeCount,
+                        edgeTraversalThroughput,
+                        nodeProcessingThroughput);
+    }
+
+    private void createQueryTargetServices(String name, int recursionDepth) throws Throwable {
         Map<URI, ExampleServiceState> exampleStates = this.host.doFactoryChildServiceStart(null,
                 this.serviceCount, ExampleServiceState.class,
                 (o) -> {
@@ -209,29 +386,84 @@ public class TestGraphQueryTaskService extends BasicTestCase {
                     o.setBody(s);
                 }, UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK));
 
-        startLinkedQueryTargetServices(exampleStates);
+        startLinkedQueryTargetServices(exampleStates, recursionDepth);
+
+        // to verify we do not include services NOT linked, create additional services not refered to
+        // by the query validation service instances
+        this.host.doFactoryChildServiceStart(null,
+                this.serviceCount, ExampleServiceState.class,
+                (o) -> {
+                    ExampleServiceState s = new ExampleServiceState();
+                    s.name = name;
+                    s.id = UUID.randomUUID().toString();
+                    o.setBody(s);
+                }, UriUtils.buildUri(this.host, ExampleService.FACTORY_LINK));
     }
 
     /**
      * Creates N query validation services, linking their documents to example service instances.
      * These two sets of service documents form the document graph we will traverse during tests
      */
-    private Collection<URI> startLinkedQueryTargetServices(
-            Map<URI, ExampleServiceState> exampleStates)
+    private void startLinkedQueryTargetServices(
+            Map<URI, ExampleServiceState> exampleStates, int recursionDepth)
             throws Throwable {
-        Set<URI> uris = new ConcurrentSkipListSet<>();
-        TestContext ctx = testCreate(exampleStates.size());
-        for (ExampleServiceState exampleState : exampleStates.values()) {
+        Set<String> nextLayerLinks = new HashSet<>();
+        Set<String> previousLayerLinks = new HashSet<>();
+
+        this.host.log("Building document graph: Service count:%d, links per document:%d, layers:%d",
+                this.serviceCount,
+                this.linkCount,
+                recursionDepth);
+
+        for (int layer = 0; layer < recursionDepth + 1; layer++) {
+
+            nextLayerLinks.clear();
+            for (int i = 0; i < this.serviceCount * Math.pow(this.linkCount, layer + 1); i++) {
+                nextLayerLinks.add(UUID.randomUUID().toString());
+            }
+
+            this.host.log(
+                    "Graph vertex counts, next: %d, previous:%d, layer:%d",
+                    nextLayerLinks.size(),
+                    previousLayerLinks.size(),
+                    layer);
+            if (previousLayerLinks.isEmpty()) {
+                for (int i = 0; i < this.serviceCount; i++) {
+                    previousLayerLinks.add(UUID.randomUUID().toString());
+                }
+            }
+
+            createGraphLayerOfLinkedServices(exampleStates, nextLayerLinks, previousLayerLinks,
+                    layer);
+            previousLayerLinks = new HashSet<>(nextLayerLinks);
+        }
+    }
+
+    private void createGraphLayerOfLinkedServices(Map<URI, ExampleServiceState> exampleStates,
+            Set<String> nextLayerLinks, Set<String> previousLayerLinks, int layer)
+            throws Throwable {
+        TestContext ctx = testCreate(previousLayerLinks.size());
+
+        Iterator<String> nextLayerLinkIt = nextLayerLinks.iterator();
+        Iterator<ExampleServiceState> exampleStateIt = exampleStates.values().iterator();
+        for (String link : previousLayerLinks) {
             QueryValidationServiceState initState = new QueryValidationServiceState();
-            initState.id = exampleState.id;
-            initState.serviceLink = exampleState.documentSelfLink;
-            Operation post = Operation.createPost(this.host, UUID.randomUUID().toString())
+            initState.id = UUID.randomUUID().toString();
+            if (!exampleStateIt.hasNext()) {
+                exampleStateIt = exampleStates.values().iterator();
+            }
+            initState.longValue = (long) layer;
+            initState.serviceLink = exampleStateIt.next().documentSelfLink;
+            initState.serviceLinks = new ArrayList<>();
+            for (int l = 0; l < this.linkCount; l++) {
+                initState.serviceLinks.add(UriUtils.normalizeUriPath(nextLayerLinkIt.next()));
+            }
+            Operation post = Operation.createPost(this.host, link)
                     .setBody(initState)
                     .setCompletion(ctx.getCompletion());
             this.host.startService(post, new QueryValidationTestService());
         }
         testWait(ctx);
-        return uris;
     }
 
 }

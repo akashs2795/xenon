@@ -1058,9 +1058,7 @@ public class LuceneDocumentIndexService extends StatelessService {
             String indexLink,
             boolean hasPage) {
 
-        URI u = UriUtils.buildUri(getHost(), UriUtils.buildUriPath(
-                ServiceUriPaths.CORE,
-                "query-page",
+        URI u = UriUtils.buildUri(getHost(), UriUtils.buildUriPath(ServiceUriPaths.CORE_QUERY_PAGE,
                 Utils.getNowMicrosUtc() + ""));
 
         // the page link must point to this node, since the index searcher and results have been
@@ -1140,6 +1138,10 @@ public class LuceneDocumentIndexService extends StatelessService {
         // Keep duplicates out
         Set<String> uniques = new LinkedHashSet<>(rsp.documentLinks);
         final boolean hasCountOption = options.contains(QueryOption.COUNT);
+        Set<String> linkWhiteList = null;
+        if (qs != null && qs.context != null && qs.context.documentLinkWhiteList != null) {
+            linkWhiteList = qs.context.documentLinkWhiteList;
+        }
 
         Map<String, Long> latestVersions = new HashMap<>();
         for (ScoreDoc sd : hits) {
@@ -1150,6 +1152,12 @@ public class LuceneDocumentIndexService extends StatelessService {
             lastDocVisited = sd;
             Document d = s.getIndexReader().document(sd.doc, fieldsToLoad);
             String link = d.get(ServiceDocument.FIELD_NAME_SELF_LINK);
+
+            // ignore results not in supplied white list
+            if (linkWhiteList != null && !linkWhiteList.contains(link)) {
+                continue;
+            }
+
             IndexableField versionField = d.getField(ServiceDocument.FIELD_NAME_VERSION);
             Long documentVersion = versionField.numericValue().longValue();
 
@@ -1857,24 +1865,15 @@ public class LuceneDocumentIndexService extends StatelessService {
 
         int versionCount = hits.length;
 
-        hitDoc = s.doc(hits[hits.length - 1].doc);
+        hitDoc = s.doc(hits[versionCount - 1].doc);
         long versionLowerBound = Long.parseLong(hitDoc.get(ServiceDocument.FIELD_NAME_VERSION));
 
         hitDoc = s.doc(hits[0].doc);
         long versionUpperBound = Long.parseLong(hitDoc.get(ServiceDocument.FIELD_NAME_VERSION));
 
-        // if the number of documents found for the passed self-link are already less than the
-        // version limit, then skip version retention.
+        // If the number of versions found are already less than the limit
+        // then there is nothing to delete. Just exit.
         if (versionCount <= versionsToKeep) {
-            logWarning("Skipping index trimming for %s from %d to %d. query returned :%d",
-                    link, versionLowerBound, versionUpperBound, hits.length);
-
-            // Let's make sure the documentSelfLink is registered for retention so that
-            // in-case we missed an update because the searcher was stale, we will perform
-            // the clean-up in the next handleMaintenance cycle.
-            synchronized (this.linkDocumentRetentionEstimates) {
-                this.linkDocumentRetentionEstimates.put(link, versionsToKeep);
-            }
             return;
         }
 
@@ -1900,6 +1899,21 @@ public class LuceneDocumentIndexService extends StatelessService {
                 results.scoreDocs.length, versionLowerBound, cutOffVersion);
 
         wr.deleteDocuments(bq);
+
+        // We have observed that sometimes Lucene search does not return all the document
+        // versions in the index. Normally, the number of documents returned should be
+        // equal to or more than the delta between the lower and upper versions. It can be more
+        // because of duplicate document versions. If that's not the case, we add the
+        // link back for retention so that the next grooming run can cleanup the missed document.
+        if (versionCount < versionUpperBound - versionLowerBound + 1) {
+            logWarning("Adding %s back for version grooming since versionCount %d " +
+                    "was lower than version delta from %d to %d.",
+                    link, versionCount, versionLowerBound, versionUpperBound);
+            synchronized (this.linkDocumentRetentionEstimates) {
+                this.linkDocumentRetentionEstimates.put(link, versionsToKeep);
+            }
+        }
+
         long now = Utils.getNowMicrosUtc();
 
         // Use time AFTER index was updated to be sure that it can be compared

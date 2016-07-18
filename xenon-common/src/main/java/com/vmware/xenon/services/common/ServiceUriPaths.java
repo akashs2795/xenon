@@ -66,6 +66,9 @@ public class ServiceUriPaths {
     public static final String CORE_QUERY_TASKS = UriUtils.buildUriPath(ServiceUriPaths.CORE,
             "query-tasks");
 
+    public static final String CORE_QUERY_PAGE = UriUtils.buildUriPath(ServiceUriPaths.CORE,
+            "query-page");
+
     public static final String CORE_GRAPH_QUERIES = UriUtils.buildUriPath(ServiceUriPaths.CORE,
             "graph-queries");
 
@@ -94,10 +97,6 @@ public class ServiceUriPaths {
     public static final String CORE_AUTHN = UriUtils.buildUriPath(ServiceUriPaths.CORE, "authn");
     public static final String CORE_AUTHN_BASIC = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHN,
             "basic");
-    public static final String CORE_AUTHN_VERIFY = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHN,
-            "verify");
-    public static final String CORE_AUTHN_CONFIG = UriUtils.buildUriPath(ServiceUriPaths.CORE_AUTHN,
-            "config");
 
     public static final String CORE_TRANSACTIONS = UriUtils.buildUriPath(ServiceUriPaths.CORE,
             "transactions");

@@ -11,48 +11,24 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.vmware.xenon.authn.common;
+package com.vmware.xenon.services.common.authn;
 
+import com.vmware.xenon.common.Claims;
 import com.vmware.xenon.common.Operation;
-import com.vmware.xenon.common.StatelessService;
-import com.vmware.xenon.services.common.authn.AuthenticationRequest;
+import com.vmware.xenon.common.OperationProcessingChain;
 
-public abstract class AuthenticationService extends StatelessService{
-
-    public static final String WWW_AUTHENTICATE_HEADER_NAME = "WWW-Authenticate";
-    public static final String WWW_AUTHENTICATE_HEADER_VALUE = "Basic realm=\"xenon\"";
+public interface AuthenticationService {
     public static final String AUTHORIZATION_HEADER_NAME = "Authorization";
 
-    @Override
-    public void authorizeRequest(Operation op) {
-        op.complete();
-    }
+    public OperationProcessingChain getOperationProcessingChain();
 
-    @Override
-    public void handlePost(Operation op) {
-        AuthenticationRequest.AuthenticationRequestType requestType =
-                op.getBody(AuthenticationRequest.class).requestType;
-        // default to login for backward compatibility
-        if (requestType == null) {
-            requestType = AuthenticationRequest.AuthenticationRequestType.LOGIN;
-        }
-        switch (requestType) {
-        case LOGIN:
-            handleLogin(op);
-            break;
-        case LOGOUT:
-            handleLogout(op);
-            break;
-        default:
-            break;
-        }
-    }
+    public void handlePostForAuthentication(Operation op) ;
 
     /**
      * handleLogout by making the expiration time of the token as 0
      * @param op
      */
-    public abstract void handleLogout(Operation op) ;
+    public void handleLogout(Operation op) ;
 
     /**
      * handleLogin method should extract userName and password from the request.
@@ -60,7 +36,10 @@ public abstract class AuthenticationService extends StatelessService{
      * on completion , call queryUserService(op , userName , password) .
      * @param op
      */
-    public abstract void handleLogin(Operation op) ;
+    public void handleLogin(Operation op) ;
+
+    public abstract void createUserPresence(Operation parentOp, String userName, String token,
+            long expirationTime);
 
     /**
      * queryUserService doesn't use username and password directly. It simply queries for the
@@ -69,15 +48,14 @@ public abstract class AuthenticationService extends StatelessService{
      * saved as the userLink which will be used as a subject in Claims itself being used for
      * creating an authorization context
      *
-     * on completion , Call authenticate(parentOp, String userLink, String userName ,
+     * on completion , Call authenticate(op, String userLink, String userName ,
                                 String password);
      *
-     * @param parentOp
+     * @param op
      * @param userName
      * @param password
      */
-    public abstract void createUserPresence(Operation parentOp, String userName, String token,
-            long expirationTime);
+    public void queryUserService(Operation op, String userName, String password);
 
     /**
      * Authenticate function is responsible for communicating with the auth provider and
@@ -86,12 +64,12 @@ public abstract class AuthenticationService extends StatelessService{
      *
      * on completion , call associateAuthorizationContext(Operation op, String userLink,
                     long expirationTime, String token);
-     * @param parentOp
+     * @param op
      * @param userLink
      * @param userName
      * @param password
      */
-    public abstract void authenticate(Operation parentOp, String userName,
+    public void authenticate(Operation op, String userLink, String userName,
             String password);
 
     /**
@@ -105,7 +83,22 @@ public abstract class AuthenticationService extends StatelessService{
      * @param token
      * @return
      */
-    public abstract boolean associateAuthorizationContext(Operation op, String userLink,
+    public boolean associateAuthorizationContext(Operation op, String userLink,
             long expirationTime, String token);
 
+    /**
+     * handlePostForVerification function is triggered when a POST request is made to the verification
+     * service of any auth provider. It sets the operation state as the Claims
+     * after successful verification
+     */
+    public void handlePostForVerification(Operation op) ;
+
+    /**
+     * The auth provider has to implement this method which will decode the token
+     * and generate a Claims object in return. If unable to decode the token or
+     * create the object, throw an appropriate exception
+     * @return Claims
+     * @throws Exception
+     */
+    public Claims verify(String token) throws Exception ;
 }

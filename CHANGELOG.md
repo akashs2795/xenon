@@ -1,6 +1,13 @@
 # CHANGELOG
 
-## 0.9.0-SNAPSHOT
+## 0.9.2-SNAPSHOT
+
+## 0.9.1
+
+* Add a new field *sourceTimeMicrosUtc* to ServiceStat to capture the
+  time the data value was acquired at the source.
+
+## 0.9.0
 
 * Add sample code for Bootstrap Service Tutorial.
   https://github.com/vmware/xenon/wiki/Bootstrap-Service-Tutorial

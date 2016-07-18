@@ -347,6 +347,8 @@ public class SimpleTransactionService extends StatefulService {
                 if (body.documentSelfLink == null) {
                     body.documentSelfLink = UUID.randomUUID().toString();
                     request.setBody(body);
+                    serviceSelfLink = UriUtils.buildUriPath(serviceSelfLink,
+                            body.documentSelfLink);
                 } else {
                     if (UriUtils.isChildPath(body.documentSelfLink, serviceSelfLink)) {
                         serviceSelfLink = body.documentSelfLink;
@@ -619,7 +621,8 @@ public class SimpleTransactionService extends StatefulService {
 
         Collection<Operation> requests = new ArrayList<>(servicesToBDeleted.size());
         for (String serviceSelfLink : servicesToBDeleted) {
-            Operation op = Operation.createDelete(UriUtils.buildUri(getHost(), serviceSelfLink));
+            Operation op = Operation.createDelete(UriUtils.buildUri(getHost(), serviceSelfLink))
+                    .setTransactionId(null);
             op.addPragmaDirective(PRAGMA_DIRECTIVE_DELETE_ON_TRANSACTION_END);
             requests.add(op);
             currentState.enrolledServices.remove(serviceSelfLink);
