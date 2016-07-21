@@ -40,7 +40,7 @@ public class QueryTask extends ServiceDocument {
     public static final int DEFAULT_PRECISION_STEP = 16;
 
     /**
-     * A list of tenant links which can access this service.
+     * A list of authorization context links which can access this service.
      */
     public List<String> tenantLinks;
 
@@ -256,6 +256,20 @@ public class QueryTask extends ServiceDocument {
             queryTask.querySpec.options = EnumSet
                     .of(QueryTask.QuerySpecification.QueryOption.EXPAND_CONTENT);
             return queryTask;
+        }
+
+        /**
+         * Performs shallow copy of this instance to the supplied instance
+         */
+        public void copyTo(QuerySpecification clonedSpec) {
+            clonedSpec.context = this.context;
+            clonedSpec.expectedResultCount = this.expectedResultCount;
+            clonedSpec.linkTerms = this.linkTerms;
+            clonedSpec.options = this.options;
+            clonedSpec.query = this.query;
+            clonedSpec.resultLimit = this.resultLimit;
+            clonedSpec.sortOrder = this.sortOrder;
+            clonedSpec.sortTerm = this.sortTerm;
         }
     }
 

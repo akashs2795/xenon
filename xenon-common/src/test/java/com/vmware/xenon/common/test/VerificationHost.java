@@ -17,6 +17,7 @@ import static javax.xml.bind.DatatypeConverter.printBase64Binary;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -207,7 +208,7 @@ public class VerificationHost extends ExampleServiceHost {
         // we create a random userAgent string to validate host to host communication when
         // the client appears to be from an external, non-Xenon source.
         ServiceClient client = NettyHttpServiceClient.create(UUID.randomUUID().toString(),
-                h.getExecutor(),
+                null,
                 h.getScheduledExecutor(), h);
 
         SSLContext clientContext = SSLContext.getInstance(ServiceClient.TLS_PROTOCOL_NAME);
@@ -871,6 +872,22 @@ public class VerificationHost extends ExampleServiceHost {
             array[i++] = u;
         }
         return getServiceState(props, type, array);
+    }
+
+    public <T extends TaskService.TaskServiceState> T getServiceStateUsingQueryTask(
+            Class<T> type, String uri)
+            throws Throwable {
+        QueryTask.Query q = QueryTask.Query.Builder.create()
+                .setTerm(ServiceDocument.FIELD_NAME_SELF_LINK, uri)
+                .build();
+
+        QueryTask queryTask = new QueryTask();
+        queryTask.querySpec = new QueryTask.QuerySpecification();
+        queryTask.querySpec.query = q;
+        queryTask.querySpec.options.add(QueryOption.EXPAND_CONTENT);
+
+        this.createQueryTaskService(null, queryTask, false, true, queryTask, null);
+        return Utils.fromJson(queryTask.results.documents.get(uri), type);
     }
 
     /**
@@ -3188,6 +3205,32 @@ public class VerificationHost extends ExampleServiceHost {
     }
 
     /**
+     * Helper method that waits for a query task to reach the expected stage
+     */
+    public QueryTask waitForQueryTask(URI uri, TaskState.TaskStage expectedStage) throws Throwable {
+
+        // If the task's state ever reaches one of these "final" stages, we can stop waiting...
+        List<TaskState.TaskStage> finalTaskStages = Arrays
+                .asList(TaskState.TaskStage.CANCELLED, TaskState.TaskStage.FAILED,
+                        TaskState.TaskStage.FINISHED, expectedStage);
+
+        String error = String.format("Task did not reach expected state %s", expectedStage);
+        Object[] r = new Object[1];
+        final URI finalUri = uri;
+        waitFor(error, () -> {
+            QueryTask state = this.getServiceState(null, QueryTask.class, finalUri);
+            r[0] = state;
+            if (state.taskInfo != null) {
+                if (finalTaskStages.contains(state.taskInfo.stage)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+        return (QueryTask) r[0];
+    }
+
+    /**
      * Helper method that waits for {@code taskUri} to have a {@link TaskState.TaskStage} == {@code
      * TaskStage.FINISHED}.
      *
@@ -3200,6 +3243,21 @@ public class VerificationHost extends ExampleServiceHost {
             String taskUri)
             throws Throwable {
         return waitForTask(type, taskUri, TaskState.TaskStage.FINISHED);
+    }
+
+    /**
+     * Helper method that waits for {@code taskUri} to have a {@link TaskState.TaskStage} == {@code
+     * TaskStage.FINISHED}.
+     *
+     * @param type    The class type that represent's the task's state
+     * @param taskUri the URI of the task to wait for
+     * @param <T>     the type that represent's the task's state
+     * @return the state of the task once's it's {@code FINISHED}
+     */
+    public <T extends TaskService.TaskServiceState> T waitForFinishedTask(Class<T> type,
+            URI taskUri)
+            throws Throwable {
+        return waitForTask(type, taskUri.toString(), TaskState.TaskStage.FINISHED);
     }
 
     /**
@@ -3221,35 +3279,57 @@ public class VerificationHost extends ExampleServiceHost {
      * Helper method that waits for {@code taskUri} to have a {@link TaskState.TaskStage} == {@code
      * expectedStage}.
      *
-     * @param type          The class type of that represent's the task's state
+     * @param type          The class type of that represents the task's state
      * @param taskUri       the URI of the task to wait for
      * @param expectedStage the stage we expect the task to eventually get to
-     * @param <T>           the type that represent's the task's state
+     * @param <T>           the type that represents the task's state
+     * @return the state of the task once it's {@link TaskState.TaskStage} == {@code expectedStage}
+     */
+    public <T extends TaskService.TaskServiceState> T waitForTask(Class<T> type, String taskUri,
+            TaskState.TaskStage expectedStage) throws Throwable {
+        return waitForTask(type, taskUri, expectedStage, false);
+    }
+
+    /**
+     * Helper method that waits for {@code taskUri} to have a {@link TaskState.TaskStage} == {@code
+     * expectedStage}.
+     *
+     * @param type          The class type of that represents the task's state
+     * @param taskUri       the URI of the task to wait for
+     * @param expectedStage the stage we expect the task to eventually get to
+     * @param useQueryTask  Uses {@link QueryTask} to retrieve the current stage of the Task
+     * @param <T>           the type that represents the task's state
      * @return the state of the task once it's {@link TaskState.TaskStage} == {@code expectedStage}
      */
     @SuppressWarnings("unchecked")
     public <T extends TaskService.TaskServiceState> T waitForTask(Class<T> type, String taskUri,
-            TaskState.TaskStage expectedStage) throws Throwable {
+            TaskState.TaskStage expectedStage, boolean useQueryTask) throws Throwable {
         URI uri = UriUtils.buildUri(taskUri);
 
         if (!uri.isAbsolute()) {
             uri = UriUtils.buildUri(this, taskUri);
         }
 
-        // If the task's state ever reaches one of these "final" stages, we can stop waiting...
         List<TaskState.TaskStage> finalTaskStages = Arrays
-                .asList(TaskState.TaskStage.CANCELLED, TaskState.TaskStage.FAILED,
-                        TaskState.TaskStage.FINISHED, expectedStage);
+                .asList(TaskState.TaskStage.CANCELLED, TaskState.TaskStage.FAILED, TaskState.TaskStage.FINISHED);
 
         String error = String.format("Task did not reach expected state %s", expectedStage);
         Object[] r = new Object[1];
         final URI finalUri = uri;
         waitFor(error, () -> {
-            T state = this.getServiceState(null, type, finalUri);
+            T state = (useQueryTask)
+                    ? this.getServiceStateUsingQueryTask(type, taskUri)
+                    : this.getServiceState(null, type, finalUri);
+
             r[0] = state;
             if (state.taskInfo != null) {
-                if (finalTaskStages.contains(state.taskInfo.stage)) {
+                if (expectedStage == state.taskInfo.stage) {
                     return true;
+                }
+                if (finalTaskStages.contains(state.taskInfo.stage)) {
+                    fail(String.format(
+                            "Task was expected to reach stage %s but reached a final stage %s",
+                            expectedStage, state.taskInfo.stage));
                 }
             }
             return false;

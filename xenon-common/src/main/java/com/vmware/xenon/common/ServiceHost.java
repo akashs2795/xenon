@@ -1221,7 +1221,10 @@ public class ServiceHost implements ServiceRequestSender {
         String userAgent = ServiceHost.class.getSimpleName() + "/" + commitID;
 
         if (this.client == null) {
-            this.client = NettyHttpServiceClient.create(userAgent, this.executor,
+            // supply a scheduled executor for re-use by the client, but do not supply our
+            // regular executor, since the I/O threads might take up all threads
+            this.client = NettyHttpServiceClient.create(userAgent,
+                    null,
                     this.scheduledExecutor,
                     this);
             SSLContext clientContext = SSLContext.getInstance(ServiceClient.TLS_PROTOCOL_NAME);
@@ -2425,7 +2428,7 @@ public class ServiceHost implements ServiceRequestSender {
                             hasClientSuppliedInitialState);
                 });
 
-                if (post.hasBody()) {
+                if (post.hasBody() && this.state.isServiceStateCaching) {
                     this.serviceResourceTracker.updateCachedServiceState(s,
                             (ServiceDocument) post.getBodyRaw(), post);
                 }

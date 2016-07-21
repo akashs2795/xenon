@@ -15,8 +15,10 @@ package com.vmware.xenon.services.common;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import com.vmware.xenon.common.ServiceDocumentDescription.PropertyUsageOption;
+import com.vmware.xenon.common.TaskState;
 
 /**
  * Service document describing a multi-stage query task used for traversing a
@@ -32,11 +34,16 @@ public class GraphQueryTask extends TaskService.TaskServiceState {
     public List<QueryTask> stages;
 
     /**
+     * A list of authorization context links which can access this service.
+     */
+    public Set<String> tenantLinks;
+
+    /**
      * Links to the query task service instances with results for each query stage. The
      * list tracks the query task link for a given {@link GraphQueryTask#currentDepth} value.
      */
     @PropertyOptions(usage = { PropertyUsageOption.SERVICE_USE })
-    public List<String> resultLinks;
+    public List<String> resultLinks = new ArrayList<>();
 
     @PropertyOptions(usage = {
             PropertyUsageOption.SINGLE_ASSIGNMENT,
@@ -55,6 +62,7 @@ public class GraphQueryTask extends TaskService.TaskServiceState {
 
         private Builder(int depthLimit) {
             this.task = new GraphQueryTask();
+            this.task.taskInfo = new TaskState();
             this.task.stages = new ArrayList<>();
             this.task.depthLimit = depthLimit;
         }
@@ -66,6 +74,11 @@ public class GraphQueryTask extends TaskService.TaskServiceState {
          */
         public static Builder create(int depthLimit) {
             return new Builder(depthLimit);
+        }
+
+        public Builder setDirect(boolean isDirect) {
+            this.task.taskInfo.isDirect = isDirect;
+            return this;
         }
 
         /**

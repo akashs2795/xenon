@@ -32,12 +32,14 @@ import com.vmware.xenon.common.CommandLineArgumentParser;
 import com.vmware.xenon.common.Operation;
 import com.vmware.xenon.common.ServiceDocumentQueryResult;
 import com.vmware.xenon.common.TaskState;
+import com.vmware.xenon.common.TaskState.TaskStage;
 import com.vmware.xenon.common.UriUtils;
 import com.vmware.xenon.common.Utils;
 import com.vmware.xenon.common.test.TestContext;
 import com.vmware.xenon.services.common.ExampleService.ExampleServiceState;
 import com.vmware.xenon.services.common.QueryTask.NumericRange;
 import com.vmware.xenon.services.common.QueryTask.Query;
+import com.vmware.xenon.services.common.QueryTask.QuerySpecification.QueryOption;
 import com.vmware.xenon.services.common.QueryValidationTestService.QueryValidationServiceState;
 
 public class TestGraphQueryTaskService extends BasicTestCase {
@@ -57,9 +59,12 @@ public class TestGraphQueryTaskService extends BasicTestCase {
 
     private long taskCompletionTimeMicros;
 
+    private boolean isFailureExpected;
+
     @Before
     public void setUp() {
         this.factoryUri = UriUtils.buildUri(this.host, ServiceUriPaths.CORE_GRAPH_QUERIES);
+        this.isFailureExpected = false;
         CommandLineArgumentParser.parseFromProperties(this);
     }
 
@@ -179,7 +184,7 @@ public class TestGraphQueryTaskService extends BasicTestCase {
         int recursionDepth = stageCount - 1;
         createQueryTargetServices(name, recursionDepth);
 
-        GraphQueryTask initialState = createMultiStageRecursiveTask(stageCount, false);
+        GraphQueryTask initialState = createTreeGraphTask(stageCount, false);
         GraphQueryTask finalState = waitForTask(initialState);
         logGraphQueryThroughput(finalState);
 
@@ -190,10 +195,67 @@ public class TestGraphQueryTaskService extends BasicTestCase {
         };
         verifyNStageResult(finalState, true, resultCounts);
 
-        // test direct task, same parameters
-        finalState = createMultiStageRecursiveTask(stageCount, true);
+        // direct task, same parameters
+        finalState = createTreeGraphTask(stageCount, true);
         logGraphQueryThroughput(finalState);
         verifyNStageResult(finalState, true, resultCounts);
+
+        QueryTask finishedFirstStage = Utils.clone(finalState.stages.get(0));
+        // indirect task, same parameters, initial stage has results
+        initialState = createTreeGraphTask(stageCount, finishedFirstStage, false);
+        finalState = waitForTask(initialState);
+        logGraphQueryThroughput(finalState);
+        verifyNStageResult(finalState, true, resultCounts);
+
+        // direct task, same parameters, initial stage has results
+        finalState = createTreeGraphTask(stageCount, finishedFirstStage, true);
+        logGraphQueryThroughput(finalState);
+        verifyNStageResult(finalState, true, resultCounts);
+
+        // direct task, same parameters, initial stage has paginated results. Task should
+        // process just a single page worth and progress the page link.
+        // Initial stage specifies SELECT_LINKS
+        QueryTask stageWithResults = createGraphQueryStage(0);
+        stageWithResults.querySpec.resultLimit = this.serviceCount / 2;
+        createAndVerifyTreeGraphWithInitialStagePaginatedResults(stageCount, stageWithResults);
+
+        // direct task, same parameters, initial stage has paginated results.
+        // Initial stage does NOT specify QueryOption.SELECT_LINKS.
+        // Expected failure
+        this.isFailureExpected = true;
+        stageWithResults = createGraphQueryStage(0);
+        stageWithResults.querySpec.resultLimit = this.serviceCount / 2;
+        stageWithResults.querySpec.options.remove(QueryOption.SELECT_LINKS);
+        createAndVerifyTreeGraphWithInitialStagePaginatedResults(stageCount, stageWithResults);
+        this.isFailureExpected = false;
+    }
+
+    private void createAndVerifyTreeGraphWithInitialStagePaginatedResults(int stageCount,
+            QueryTask stageWithResults) throws Throwable {
+        GraphQueryTask finalState;
+        QueryTask finishedFirstStage;
+        // wait for query task to finish. We will supply it in the *completed* stage, as part
+        // of a graph query task, which will use its results (from the page link), instead
+        // of executing its query
+        URI firstStageTaskUri = this.host.createQueryTaskService(stageWithResults, true);
+        finishedFirstStage = this.host.waitForQueryTask(firstStageTaskUri, TaskStage.FINISHED);
+        finalState = createTreeGraphTask(stageCount, finishedFirstStage, true);
+
+        if (this.isFailureExpected) {
+            assertEquals(null, finalState);
+            return;
+        }
+
+        logGraphQueryThroughput(finalState);
+        // since the graph processed only a page worth, we expect less results per stage
+        int pageLimit = stageWithResults.querySpec.resultLimit;
+        int[] pagedResultCounts = {
+                pageLimit,
+                pageLimit * this.linkCount,
+                pageLimit * this.linkCount * this.linkCount
+        };
+
+        verifyNStageResult(finalState, true, pagedResultCounts);
     }
 
     private void verifyNStageResult(GraphQueryTask finalState, int... expectedCounts) {
@@ -229,8 +291,7 @@ public class TestGraphQueryTaskService extends BasicTestCase {
         } else if (!isFinalStage) {
             int expectedLinkCount = expectedResultCount;
             if (isRecursive) {
-                expectedLinkCount = (int) (this.serviceCount
-                        * Math.pow(this.linkCount, stageIndex + 1));
+                expectedLinkCount *= this.linkCount;
             }
             assertTrue(stage.selectedLinks.size() == expectedLinkCount);
         }
@@ -274,22 +335,42 @@ public class TestGraphQueryTaskService extends BasicTestCase {
                 .build();
 
         GraphQueryTask initialState = GraphQueryTask.Builder.create(2)
+                .setDirect(true)
                 .addQueryStage(stageOneSelectQueryValidationInstances)
                 .addQueryStage(stageTwoSelectExampleInstances)
                 .build();
 
-        initialState = createTask(initialState, isDirect);
+        // set tenant links and verify each stage query task has the top level tenant links
+        // transferred
+        initialState.tenantLinks = new HashSet<>();
+        initialState.tenantLinks.add("/some/link");
+        initialState.tenantLinks.add("/some/other-link");
+        initialState = createTask(initialState);
+        for (QueryTask stage : initialState.stages) {
+            assertTrue(stage.tenantLinks.size() == initialState.tenantLinks.size());
+            for (String s : initialState.tenantLinks) {
+                assertTrue(stage.tenantLinks.contains(s));
+            }
+        }
         return initialState;
     }
 
-    private GraphQueryTask createMultiStageRecursiveTask(int stageCount,
+    private GraphQueryTask createTreeGraphTask(int stageCount,
             boolean isDirect) throws Throwable {
-        return createMultiStageRecursiveTask(stageCount, null, isDirect);
+        return createTreeGraphTask(stageCount, null, isDirect);
     }
 
-    private GraphQueryTask createMultiStageRecursiveTask(int stageCount,
+    private GraphQueryTask createTreeGraphTask(int stageCount,
             QueryTask initialStage,
             boolean isDirect) throws Throwable {
+        GraphQueryTask initialState = createGraphTaskState(stageCount, initialStage);
+        initialState.taskInfo = new TaskState();
+        initialState.taskInfo.isDirect = isDirect;
+        initialState = createTask(initialState);
+        return initialState;
+    }
+
+    private GraphQueryTask createGraphTaskState(int stageCount, QueryTask initialStage) {
         GraphQueryTask.Builder builder = GraphQueryTask.Builder.create(stageCount);
         for (int i = 0; i < stageCount; i++) {
             if (i == 0 && initialStage != null) {
@@ -301,50 +382,64 @@ public class TestGraphQueryTaskService extends BasicTestCase {
             // that points to more instances of the same service type. It logically forms a
             // directed graph, a tree, with the first layer pointing to serviceCount * linkCount
             // leafs, which in turn, each point to linkCount worth of sub leafs, etc
-            QueryTask stage = QueryTask.Builder.create()
-                    .addLinkTerm(QueryValidationServiceState.FIELD_NAME_SERVICE_LINKS)
-                    .setQuery(Query.Builder.create()
-                            .addRangeClause(QueryValidationServiceState.FIELD_NAME_LONG_VALUE,
-                                    NumericRange.createLongRange((long) i, (long) i, true, true))
-                            .addKindFieldClause(QueryValidationServiceState.class)
-                            .build())
-                    .build();
+            QueryTask stage = createGraphQueryStage(i);
             builder.addQueryStage(stage);
         }
 
         GraphQueryTask initialState = builder.build();
         this.taskCreationTimeMicros = Utils.getNowMicrosUtc();
-        initialState = createTask(initialState, isDirect);
         return initialState;
     }
 
-    private GraphQueryTask createTask(GraphQueryTask initialState, boolean isDirect)
+    private QueryTask createGraphQueryStage(int stageIndex) {
+        QueryTask stage = QueryTask.Builder.create()
+                .addOption(QueryOption.SELECT_LINKS)
+                .addLinkTerm(QueryValidationServiceState.FIELD_NAME_SERVICE_LINKS)
+                .setQuery(Query.Builder.create()
+                        .addRangeClause(QueryValidationServiceState.FIELD_NAME_LONG_VALUE,
+                                NumericRange.createLongRange((long) stageIndex, (long) stageIndex,
+                                        true, true))
+                        .addKindFieldClause(QueryValidationServiceState.class)
+                        .build())
+                .build();
+        return stage;
+    }
+
+    private GraphQueryTask createTask(GraphQueryTask initialState)
             throws Throwable {
         Operation post = Operation.createPost(this.factoryUri);
         GraphQueryTask[] rsp = new GraphQueryTask[1];
 
-        if (isDirect) {
-            initialState.taskInfo = TaskState.createDirect();
-        }
 
-        this.host.log("Creating task (isDirect:%s)", isDirect);
+        this.host.log("Creating task (isDirect:%s)", initialState.taskInfo.isDirect);
         TestContext ctx = testCreate(1);
         post.setBody(initialState).setCompletion((o, e) -> {
             if (e != null) {
-                ctx.failIteration(e);
+                if (this.isFailureExpected) {
+                    ctx.completeIteration();
+                } else {
+                    ctx.failIteration(e);
+                }
                 return;
             }
             GraphQueryTask r = o.getBody(GraphQueryTask.class);
             rsp[0] = r;
-            if (isDirect) {
+            if (initialState.taskInfo.isDirect) {
                 this.taskCompletionTimeMicros = Utils.getNowMicrosUtc();
             }
             ctx.completeIteration();
         });
+
+        // force remote to prove task results and response serialize properly
+        post.forceRemote();
         this.host.send(post);
         testWait(ctx);
-        this.host.log("Task created (isDirect:%s) (stage: %s)", isDirect, rsp[0].taskInfo.stage);
-        assertEquals(isDirect, rsp[0].taskInfo.isDirect);
+        if (this.isFailureExpected) {
+            return null;
+        }
+        this.host.log("Task created (isDirect:%s) (stage: %s)",
+                initialState.taskInfo.isDirect, rsp[0].taskInfo.stage);
+        assertEquals(initialState.taskInfo.isDirect, rsp[0].taskInfo.isDirect);
         return rsp[0];
     }
 
@@ -352,6 +447,22 @@ public class TestGraphQueryTaskService extends BasicTestCase {
         GraphQueryTask t = this.host.waitForFinishedTask(GraphQueryTask.class,
                 initialState.documentSelfLink);
         this.taskCompletionTimeMicros = Utils.getNowMicrosUtc();
+        TestContext ctx = testCreate(1);
+        Operation get = Operation.createGet(this.host, initialState.documentSelfLink)
+                .forceRemote().setCompletion((o, e) -> {
+                    if (e != null) {
+                        ctx.failIteration(e);
+                        return;
+                    }
+                    GraphQueryTask rsp = o.getBody(GraphQueryTask.class);
+                    if (rsp.stages == null) {
+                        ctx.failIteration(new IllegalStateException("missing stages"));
+                        return;
+                    }
+                    ctx.completeIteration();
+                });
+        this.host.send(get);
+        testWait(ctx);
         return t;
     }
 
