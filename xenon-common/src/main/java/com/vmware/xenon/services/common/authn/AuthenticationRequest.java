@@ -16,7 +16,7 @@ package com.vmware.xenon.services.common.authn;
 public class AuthenticationRequest {
 
     public static enum Kind {
-            AUTHENTICATION, VERIFICATION
+        AUTHENTICATION, VERIFICATION
     }
 
     public static enum AuthenticationRequestType {

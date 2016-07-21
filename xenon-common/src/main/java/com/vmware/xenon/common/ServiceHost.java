@@ -2067,11 +2067,14 @@ public class ServiceHost implements ServiceRequestSender {
         }
 
         if (this.isAuthorizationEnabled() && post.getAuthorizationContext() == null) {
-            populateAuthorizationContext(post);
+            populateAuthorizationContext(post, (postWithAuthContext, throwable) -> {
+                // kick off service start state machine
+                processServiceStart(ProcessingStage.INITIALIZING, service,
+                        postWithAuthContext, postWithAuthContext.hasBody());
+            });
+        } else {
+            processServiceStart(ProcessingStage.INITIALIZING, service, post, post.hasBody());
         }
-
-        // kick off service start state machine
-        processServiceStart(ProcessingStage.INITIALIZING, service, post, post.hasBody());
         return this;
     }
 
@@ -2942,18 +2945,25 @@ public class ServiceHost implements ServiceRequestSender {
 
         if (this.isAuthorizationEnabled()) {
             if (inboundOp.getAuthorizationContext() == null) {
-                populateAuthorizationContext(inboundOp);
-            }
-
-            if (this.authorizationService != null) {
+                populateAuthorizationContext(inboundOp,
+                        (inboundOpWithAuthContext, contextFailure) -> {
+                            if (this.authorizationService != null) {
+                                inboundOpWithAuthContext.nestCompletion(op -> {
+                                    handleRequestWithAuthContext(service, op);
+                                });
+                                queueOrScheduleRequest(this.authorizationService,
+                                        inboundOpWithAuthContext);
+                            }
+                        }
+                );
+            } else if (this.authorizationService != null) {
                 inboundOp.nestCompletion(op -> {
                     handleRequestWithAuthContext(service, op);
                 });
                 queueOrScheduleRequest(this.authorizationService, inboundOp);
-                return true;
             }
+            return true;
         }
-
         handleRequestWithAuthContext(service, inboundOp);
         return true;
     }
@@ -3016,64 +3026,60 @@ public class ServiceHost implements ServiceRequestSender {
      *        When a support for new auth provider is added, ensure that its verification service
      *        is also synchronous else this will simply return back a null claims data.
      */
-    public Claims doVerificationSynchronously(String authToken , String authProvider) {
-        String targetURI = UriUtils.buildUriPath(
-                ServiceUriPaths.CORE_AUTHN, authProvider);
-        AuthenticationRequest body =
-                new AuthenticationRequest();
-        body.kind = AuthenticationRequest.Kind.VERIFICATION;
-        CountDownLatch verificationComplete = new CountDownLatch(1);
-        final Claims[] externalClaimsData = new Claims[1];
-        Operation postRequest = Operation.createPost(UriUtils.buildUri(this , targetURI))
-                .setReferer(this.getUri())
-                .setBody(body)
-                .addRequestHeader("token" , authToken)
-                .setCompletion((authOp ,authEx) -> {
-                    if (authEx != null) {
-                        log(Level.WARNING, "Error verifying the token : %s" ,
-                                Utils.toString(authEx));
-                        externalClaimsData[0] = null ;
-                        verificationComplete.countDown();
-                        return ;
-                    }
-                    if (authOp.getStatusCode() != Operation.STATUS_CODE_OK) {
-                        verificationComplete.countDown();
-                        externalClaimsData[0] = null ;
-                        return;
-                    }
-                    externalClaimsData[0] = authOp.getBody(Claims.class);
-                    verificationComplete.countDown();
-                });
-        sendRequest(postRequest);
 
+    public void authProviderVerification(String token, String authProviderType, Operation op,
+            CompletionHandler verificationHandler) {
         try {
-            verificationComplete.await();
-            return externalClaimsData[0];
-        } catch (InterruptedException e) {
-            log(Level.INFO, "Timeout waiting for verification request to %s",
-                    postRequest.getUri().getPath());
-            return null ;
+            Claims claims = null;
+            if (authProviderType.equals(AUTH_TYPE_BASIC)) {
+                claims = this.getTokenVerifier().verify(token, Claims.class);
+                op.setBody(claims);
+                verificationHandler.handle(op , null);
+            } else {
+                String targetURI = UriUtils.buildUriPath(
+                        ServiceUriPaths.CORE_AUTHN, authProviderType);
+                AuthenticationRequest body =
+                        new AuthenticationRequest();
+                body.kind = AuthenticationRequest.Kind.VERIFICATION;
+                Operation postRequest = Operation.createPost(UriUtils.buildUri(this , targetURI))
+                        .setReferer(this.getUri())
+                        .setBody(body)
+                        .addRequestHeader("token" , token)
+                        .setCompletion((authOp ,authEx) -> {
+                            if (authEx != null) {
+                                log(Level.WARNING, "Error verifying the token : %s" ,
+                                        Utils.toString(authEx));
+                                op.setBody(null);
+                                verificationHandler.handle(op , null);
+                                return ;
+                            }
+                            if (authOp.getStatusCode() != Operation.STATUS_CODE_OK) {
+                                op.setBody(null);
+                                verificationHandler.handle(op , null);
+                                return;
+                            }
+                            op.setBody(authOp.getBody(Claims.class));
+                            verificationHandler.handle(op , null);
+                        });
+                sendRequest(postRequest);
+            }
+        } catch (TokenException | GeneralSecurityException e) {
+            log(Level.INFO, "Error verifying token: %s", e);
+            op.setBody(null);
+            verificationHandler.handle(op , null);
         }
     }
 
-    /**
-     * Using doVerificationSynchronously method we get the claims data from the verifier service
-     * as a claimsVerificationState. We then create a Claims object using the data we just received
-     * and return that object. If any error occurred while verifying the token and getting required
-     * data, simply return null.
-     * @return Claims
-     */
-    public Claims externalProviderVerification(String authToken, String authProvider) {
-        return doVerificationSynchronously(authToken , authProvider);
-    }
-
-    AuthorizationContext getAuthorizationContext(Operation op) {
-        String authType = op.getRequestHeader(Operation.AUTH_TYPE_HEADER);
+    void getAuthorizationContext(Operation op, CompletionHandler authHandler) {
+        Operation clone = op.clone();
         String token = op.getRequestHeader(Operation.REQUEST_AUTH_TOKEN_HEADER);
+        String authType = op.getRequestHeader(Operation.AUTH_TYPE_HEADER);
         if (token == null) {
             Map<String, String> cookies = op.getCookies();
             if (cookies == null) {
-                return null;
+                clone.setBody(null);
+                authHandler.handle(clone , null);
+                return;
             }
             token = cookies.get(AuthenticationConstants.REQUEST_AUTH_TOKEN_COOKIE);
         }
@@ -3082,58 +3088,83 @@ public class ServiceHost implements ServiceRequestSender {
             authType = AUTH_TYPE_BASIC ;
         }
         if (token == null) {
-            return null;
+            clone.setBody(null);
+            authHandler.handle(clone , null);
+            return;
         }
 
         AuthorizationContext ctx = this.authorizationContextCache.get(token);
+        Claims claims = null;
 
-        try {
-            Claims claims = null;
-            if (ctx == null) {
-                if (!authType.matches(AUTH_TYPE_BASIC)) {
-                    claims = externalProviderVerification(token , authType.toLowerCase());
+        if (ctx == null) {
+            String tokenCopy = token;
+            authProviderVerification(token, authType, clone, (verifyOp , verifyFailure) -> {
+                Claims finalClaims ;
+                String finalToken = tokenCopy;
+                AuthorizationContext finalCtx ;
+
+                if (verifyOp.hasBody()) {
+                    finalClaims = verifyOp.getBody(Claims.class);
                 } else {
-                    claims = this.getTokenVerifier().verify(token, Claims.class);
+                    finalClaims = null ;
                 }
-            } else {
-                claims = ctx.getClaims();
-            }
+                if (finalClaims == null) {
+                    log(Level.INFO, "Request to %s has no claims found with token: %s",
+                            op.getUri().getPath(), finalToken);
+                    clone.setBody(null);
+                    authHandler.handle(clone , null);
+                    return;
+                }
 
-            if (claims == null) {
-                log(Level.INFO, "Request to %s has no claims found with token: %s",
-                        op.getUri().getPath(), token);
-                return null;
-            }
+                Long expirationTime = finalClaims.getExpirationTime();
+                if (expirationTime != null && expirationTime <= Utils.getNowMicrosUtc()) {
+                    synchronized (this.state) {
+                        this.authorizationContextCache.remove(finalToken);
+                        this.userLinktoTokenMap.remove(finalClaims.getSubject());
+                    }
+                    clone.setBody(null);
+                    authHandler.handle(clone , null);
+                    return;
+                }
 
-            Long expirationTime = claims.getExpirationTime();
-            if (expirationTime != null && expirationTime <= Utils.getNowMicrosUtc()) {
+                AuthorizationContext.Builder b = AuthorizationContext.Builder.create();
+                b.setClaims(finalClaims);
+                b.setToken(finalToken);
+                finalCtx = b.getResult();
                 synchronized (this.state) {
-                    this.authorizationContextCache.remove(token);
-                    this.userLinktoTokenMap.remove(claims.getSubject());
+                    this.authorizationContextCache.put(finalToken, finalCtx);
+                    addUserToken(this.userLinktoTokenMap, finalClaims.getSubject(), finalToken);
                 }
-                return null;
-            }
-
-            if (ctx != null) {
-                return ctx;
-            }
-
-            AuthorizationContext.Builder b = AuthorizationContext.Builder.create();
-            b.setClaims(claims);
-            b.setToken(token);
-            ctx = b.getResult();
-            synchronized (this.state) {
-                this.authorizationContextCache.put(token, ctx);
-                addUserToken(this.userLinktoTokenMap, claims.getSubject(), token);
-            }
-            return ctx;
-        } catch (TokenException | GeneralSecurityException e) {
-            log(Level.INFO, "Error verifying token: %s", e);
+                clone.setBody(finalCtx);
+                authHandler.handle(clone , null);
+                return ;
+            });
+            return ;
+        } else {
+            claims = ctx.getClaims();
+        }
+        if (claims == null) {
+            log(Level.INFO, "Request to %s has no claims found with token: %s",
+                    op.getUri().getPath(), token);
+            clone.setBody(null);
+            authHandler.handle(clone , null);
+            return;
         }
 
-        return null;
-    }
+        Long expirationTime = claims.getExpirationTime();
+        if (expirationTime != null && expirationTime <= Utils.getNowMicrosUtc()) {
+            synchronized (this.state) {
+                this.authorizationContextCache.remove(token);
+                this.userLinktoTokenMap.remove(claims.getSubject());
+            }
+            clone.setBody(null);
+            authHandler.handle(clone , null);
+            return;
+        }
 
+        clone.setBody(ctx);
+        authHandler.handle(clone , null);
+    }
 
     /**
      * Helper method to associate a token with a userServiceLink
@@ -5185,14 +5216,21 @@ public class ServiceHost implements ServiceRequestSender {
         return this.authorizationContextCache.get(token);
     }
 
-    private void populateAuthorizationContext(Operation op) {
-        AuthorizationContext ctx = getAuthorizationContext(op);
-        if (ctx == null) {
-            // No (valid) authorization context, fall back to guest context
-            ctx = getGuestAuthorizationContext();
-        }
-
-        op.setAuthorizationContext(ctx);
+    private void populateAuthorizationContext(Operation op, CompletionHandler completion) {
+        getAuthorizationContext(op, (resultCtxOp , populateFailure) -> {
+            AuthorizationContext ctx ;
+            if (!resultCtxOp.hasBody()) {
+                ctx = null;
+            } else {
+                ctx = resultCtxOp.getBody(AuthorizationContext.class);
+            }
+            if (ctx == null) {
+                // No (valid) authorization context, fall back to guest context
+                ctx = getGuestAuthorizationContext();
+            }
+            op.setAuthorizationContext(ctx);
+            completion.handle(op , populateFailure);
+        });
     }
 
     /**
