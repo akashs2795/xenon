@@ -42,12 +42,8 @@ public interface AuthenticationService {
             long expirationTime);
 
     /**
-     * queryUserService doesn't use username and password directly. It simply queries for the
-     * dummy user for the auth provider created when the host was started. If the query fails,
-     * the operation is not continued forward however on success, the self link of the document is
-     * saved as the userLink which will be used as a subject in Claims itself being used for
-     * creating an authorization context
-     *
+     * queryUserService simply queries for the user. If the query fails, a new user is created
+     * using createUserPresence , else the self link of user is saved.
      * on completion , Call authenticate(op, String userLink, String userName ,
                                 String password);
      *
