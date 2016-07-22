@@ -3040,7 +3040,7 @@ public class ServiceHost implements ServiceRequestSender {
                 verificationHandler.handle(op , null);
             } else {
                 String targetURI = UriUtils.buildUriPath(
-                        ServiceUriPaths.CORE_AUTHN, authProviderType);
+                        ServiceUriPaths.CORE_AUTHN, authProviderType.toLowerCase());
                 AuthenticationRequest body =
                         new AuthenticationRequest();
                 body.kind = AuthenticationRequest.Kind.VERIFICATION;
