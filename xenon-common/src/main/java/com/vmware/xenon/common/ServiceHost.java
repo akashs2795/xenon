@@ -63,6 +63,7 @@ import java.util.logging.ConsoleHandler;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
@@ -91,7 +92,7 @@ import com.vmware.xenon.services.common.AuthCredentialsService;
 import com.vmware.xenon.services.common.AuthorizationContextService;
 import com.vmware.xenon.services.common.ConsistentHashingNodeSelectorService;
 import com.vmware.xenon.services.common.FileContentService;
-import com.vmware.xenon.services.common.GraphQueryTaskFactoryService;
+import com.vmware.xenon.services.common.GraphQueryTaskService;
 import com.vmware.xenon.services.common.GuestUserService;
 import com.vmware.xenon.services.common.LocalQueryTaskFactoryService;
 import com.vmware.xenon.services.common.LuceneBlobIndexService;
@@ -113,6 +114,7 @@ import com.vmware.xenon.services.common.ServiceHostLogService;
 import com.vmware.xenon.services.common.ServiceHostManagementService;
 import com.vmware.xenon.services.common.ServiceUriPaths;
 import com.vmware.xenon.services.common.SystemUserService;
+import com.vmware.xenon.services.common.TaskFactoryService;
 import com.vmware.xenon.services.common.TenantService;
 import com.vmware.xenon.services.common.TransactionFactoryService;
 import com.vmware.xenon.services.common.UpdateIndexRequest;
@@ -829,6 +831,7 @@ public class ServiceHost implements ServiceRequestSender {
 
     public ServiceHost setServiceStateCaching(boolean enable) {
         this.state.isServiceStateCaching = enable;
+        this.serviceResourceTracker.setServiceStateCaching(enable);
         return this;
     }
 
@@ -1200,6 +1203,9 @@ public class ServiceHost implements ServiceRequestSender {
             this.state.httpsPort = this.httpsListener.getPort();
         }
 
+        // Update the caching policy on the ServiceResourceTracker.
+        this.serviceResourceTracker.setServiceStateCaching(this.state.isServiceStateCaching);
+
         saveState();
 
         this.documentIndexServiceUri = UriUtils.updateUriPort(this.documentIndexServiceUri,
@@ -1294,7 +1300,7 @@ public class ServiceHost implements ServiceRequestSender {
                         new ServiceContextIndexService(),
                         new QueryTaskFactoryService(),
                         new LocalQueryTaskFactoryService(),
-                        new GraphQueryTaskFactoryService() };
+                        TaskFactoryService.create(GraphQueryTaskService.class) };
                 startCoreServicesSynchronously(queryServiceArray);
             }
         }
@@ -2156,7 +2162,7 @@ public class ServiceHost implements ServiceRequestSender {
     }
 
     private void restoreActionOnChildServiceToPostOnFactory(String link, Operation op) {
-        log(Level.INFO, "Changing URI for (id:%d) %s from %s to factory",
+        log(Level.FINE, "Changing URI for (id:%d) %s from %s to factory",
                 op.getId(), op.getAction(), link);
         // restart a PUT to a child service, to a POST to the factory
         op.removePragmaDirective(Operation.PRAGMA_DIRECTIVE_POST_TO_PUT);
@@ -2224,7 +2230,7 @@ public class ServiceHost implements ServiceRequestSender {
 
         if (existing.getProcessingStage() != ProcessingStage.AVAILABLE) {
             restoreActionOnChildServiceToPostOnFactory(servicePath, post);
-            log(Level.INFO, "Retrying (%d) POST to idempotent %s in stage %s",
+            log(Level.FINE, "Retrying (%d) POST to idempotent %s in stage %s",
                     post.getId(),
                     servicePath, existing.getProcessingStage());
             // Service is in the process of starting or stopping. Retry at a later time.
@@ -2428,7 +2434,7 @@ public class ServiceHost implements ServiceRequestSender {
                             hasClientSuppliedInitialState);
                 });
 
-                if (post.hasBody() && this.state.isServiceStateCaching) {
+                if (post.hasBody()) {
                     this.serviceResourceTracker.updateCachedServiceState(s,
                             (ServiceDocument) post.getBodyRaw(), post);
                 }
@@ -2527,8 +2533,7 @@ public class ServiceHost implements ServiceRequestSender {
     }
 
     void loadServiceState(Service s, Operation op) {
-        ServiceDocument state = this.serviceResourceTracker.getCachedServiceState(s.getSelfLink(),
-                op);
+        ServiceDocument state = this.serviceResourceTracker.getCachedServiceState(s, op);
 
         // Clone state if it might change while processing
         if (state != null && !s.hasOption(ServiceOption.CONCURRENT_UPDATE_HANDLING)) {
@@ -2663,10 +2668,6 @@ public class ServiceHost implements ServiceRequestSender {
                 ServiceDocument r = (ServiceDocument) rsp;
                 st.copyTo(r);
             }
-        }
-
-        if (!this.state.isServiceStateCaching && isServiceIndexed(s)) {
-            return;
         }
 
         if (op != null && op.getAction() == Action.DELETE) {
@@ -4593,7 +4594,12 @@ public class ServiceHost implements ServiceRequestSender {
 
         FactoryService factoryService = (FactoryService) parentService;
 
-        Operation onDemandPost = Operation.createPost(inboundOp.getUri());
+        String servicePath = inboundOp.getUri().getPath();
+        if (ServiceHost.isHelperServicePath(servicePath)) {
+            servicePath = UriUtils.getParentPath(servicePath);
+
+        }
+        Operation onDemandPost = Operation.createPost(this, servicePath);
 
         CompletionHandler c = (o, e) -> {
             if (e != null) {

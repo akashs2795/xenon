@@ -461,9 +461,10 @@ public class TestLuceneDocumentIndexService extends BasicReportTestCase {
             h.initialize(args);
 
             if (!this.host.isStressTest()) {
+                h.setServiceStateCaching(false);
                 // set the index service memory use to be very low to cause pruning of any cached entries
                 h.setServiceMemoryLimit(ServiceUriPaths.CORE_DOCUMENT_INDEX, 0.0001);
-                h.setMaintenanceIntervalMicros(TimeUnit.MILLISECONDS.toMicros(100));
+                h.setMaintenanceIntervalMicros(TimeUnit.MILLISECONDS.toMicros(250));
             }
 
             long start = Utils.getNowMicrosUtc();
@@ -731,6 +732,29 @@ public class TestLuceneDocumentIndexService extends BasicReportTestCase {
         // verify that no attempts to start service occurred
         assertTrue(startCount == MinimalTestService.HANDLE_START_COUNT.get());
 
+        ExampleServiceState st = new ExampleServiceState();
+        st.name = Utils.getNowMicrosUtc() + "";
+
+        // subscribe to some services
+        URI serviceToSubscribe = childUris.remove(0);
+        TestContext ctx = testCreate(1);
+        Operation subscribe = Operation.createPost(serviceToSubscribe)
+                .setCompletion(ctx.getCompletion())
+                .setReferer(this.host.getReferer());
+
+        TestContext notifyCtx = testCreate(1);
+        this.host.startReliableSubscriptionService(subscribe, (notifyOp) -> {
+            notifyOp.complete();
+            notifyCtx.completeIteration();
+        });
+        testWait(ctx);
+        // do a PATCH, to trigger a notification
+        Operation patch = Operation.createPatch(serviceToSubscribe)
+                .setBody(st);
+        this.host.send(patch);
+        // wait for completion triggered by notification
+        testWait(notifyCtx);
+
         // delete some of the services, not using a body, emulation DELETE through expiration
         URI serviceToDelete = childUris.remove(0);
         Operation delete = Operation.createDelete(serviceToDelete)
@@ -738,11 +762,9 @@ public class TestLuceneDocumentIndexService extends BasicReportTestCase {
         this.host.sendAndWait(delete);
 
         // attempt to use service we just deleted, we should get failure
-        ExampleServiceState st = new ExampleServiceState();
-        st.name = Utils.getNowMicrosUtc() + "";
 
         // do a PATCH, expect 404
-        Operation patch = Operation.createPatch(serviceToDelete)
+        patch = Operation.createPatch(serviceToDelete)
                 .setBody(st)
                 .setCompletion(
                         this.host.getExpectedFailureCompletion(Operation.STATUS_CODE_NOT_FOUND));
